@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  godseye-api:
+    build: .
+    container_name: godseye-api
+    ports:
+      - "8000:8000"
+    environment:
+      - GODSEYE_DB_PATH=/data/godseye.db
+      - GODSEYE_CACHE_TTL_SECONDS=3600
+      - GODSEYE_MAX_CONCURRENCY=8
+    volumes:
+      - godseye_data:/data
+    restart: unless-stopped
+
+volumes:
+  godseye_data:
