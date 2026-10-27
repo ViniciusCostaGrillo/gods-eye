@@ -1,9 +1,10 @@
-"""Case & Target Management Service with RBAC, Target Auto-Detection & Audit Logging."""
+"""Case & Target Management Service with RBAC, Target Auto-Detection (Phone/Crypto/BR) & Audit Logging."""
 
 import ipaddress
 import re
 from typing import Any
 
+from godseye.collectors.expansion_sources import parse_e164_phone
 from godseye.core.security import (
     check_permission,
     hash_sensitive_identifier,
@@ -21,10 +22,16 @@ from godseye.domain.enums import (
 from godseye.domain.models import AuditEvent, Case, Entity, Target
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-CNPJ_RE = re.compile(r"^\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}$")
-CEP_RE = re.compile(r"^\d{5}-?\d{3}$")
+CNPJ_RE = re.compile(r"^\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}$")
+CEP_RE = re.compile(r"^\d{5}-\d{3}$")
 CNJ_PROCESSO_RE = re.compile(r"^\d{7}-?\d{2}\.?\d{4}\.?\d\.?\d{2}\.?\d{4}$")
 BR_PLATE_RE = re.compile(r"^[A-Z]{3}-?[0-9][A-Z0-9][0-9]{2}$", re.IGNORECASE)
+ETH_ADDR_RE = re.compile(r"^0x[a-fA-F0-9]{40}$")
+BTC_ADDR_RE = re.compile(r"^(?:bc1|[13])[a-zA-HJ-NP-Z0-9]{25,59}$")
+TRON_ADDR_RE = re.compile(r"^T[a-zA-HJ-NP-Z0-9]{33}$")
+PHONE_INTL_RE = re.compile(r"^\+\d{10,15}$")
+PHONE_BR_FMT_RE = re.compile(r"^\(?\d{2}\)?\s*9?\d{4}-?\d{4}$")
+IMAGE_EXT_RE = re.compile(r".+\.(?:png|jpg|jpeg|webp|gif|tiff|bmp)$", re.IGNORECASE)
 DOMAIN_RE = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
 
 
@@ -40,6 +47,17 @@ def detect_target_type(raw_value: str) -> TargetType:
     except ValueError:
         pass
 
+    if ETH_ADDR_RE.match(val) or BTC_ADDR_RE.match(val) or TRON_ADDR_RE.match(val):
+        return TargetType.CRYPTO_ADDRESS
+
+    if IMAGE_EXT_RE.match(val):
+        return TargetType.IMAGE
+
+    if PHONE_INTL_RE.match(re.sub(r"[\s()-]", "", val)) or (
+        PHONE_BR_FMT_RE.match(val) and ("(" in val or "-" in val or " " in val or val.startswith("+"))
+    ):
+        return TargetType.PHONE
+
     digits = re.sub(r"\D", "", val)
     if CNPJ_RE.match(val) or len(digits) == 14:
         return TargetType.CNPJ
@@ -47,6 +65,8 @@ def detect_target_type(raw_value: str) -> TargetType:
         return TargetType.PROCESSO
     if CEP_RE.match(val) or len(digits) == 8:
         return TargetType.CEP
+    if len(digits) in (10, 11) and digits.isdigit():
+        return TargetType.PHONE
     if BR_PLATE_RE.match(val):
         return TargetType.VEHICLE_PLATE
     if DOMAIN_RE.match(val.lower()):
@@ -62,8 +82,11 @@ def normalize_target_value(target_type: TargetType, raw_value: str) -> str:
             return val.lower()
         case TargetType.CNPJ | TargetType.CEP | TargetType.PROCESSO:
             return re.sub(r"\D", "", val)
+        case TargetType.PHONE:
+            return str(parse_e164_phone(val)["e164"])
+        case TargetType.CRYPTO_ADDRESS:
+            return val.lower() if val.startswith("0x") else val
         case TargetType.VEHICLE_PLATE:
-            # Per apis-osint-brasil.md Section 11 & 14: store masked + hashed plate unless contract
             return f"{mask_plate(val)}#{hash_sensitive_identifier(val)[:10]}"
         case TargetType.USERNAME:
             return val.lstrip("@").strip()
@@ -85,6 +108,7 @@ def target_type_to_entity_type(target_type: TargetType) -> EntityType:
         TargetType.PROCESSO: EntityType.LEGAL_CASE,
         TargetType.VEHICLE_PLATE: EntityType.VEHICLE,
         TargetType.PHONE: EntityType.PHONE,
+        TargetType.CRYPTO_ADDRESS: EntityType.CRYPTO_WALLET,
         TargetType.IMAGE: EntityType.IMAGE,
         TargetType.DOCUMENT: EntityType.DOCUMENT,
     }
@@ -200,7 +224,6 @@ class CaseService:
         resolved_type = target_type or detect_target_type(value)
         normalized = normalize_target_value(resolved_type, value)
 
-        # Avoid duplicate target in same case
         for existing in self.repo.list_targets(case_id):
             if existing.type == resolved_type and existing.normalized_value == normalized:
                 return existing
@@ -213,7 +236,6 @@ class CaseService:
         )
         self.repo.save_target(target)
 
-        # Ensure root Entity exists in graph
         root_entity_type = target_type_to_entity_type(resolved_type)
         existing_ent = self.repo.find_entity(case_id, root_entity_type, normalized)
         if existing_ent is None:

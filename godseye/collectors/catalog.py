@@ -106,6 +106,23 @@ RAW_GLOBAL_100: list[tuple[str, str, str, str, str, str, str, list[TargetType], 
     ("exiftool", "ExifTool", "https://exiftool.org/", "Mídia", "Metadados EXIF de imagens e vídeos", "Gratuito", "none", [TargetType.IMAGE], [EntityType.LOCATION, EntityType.DOCUMENT]),
     ("metadefender", "Metadefender", "https://www.opswat.com/technologies/metadefender", "Arquivos", "Análise de arquivos e metadados", "Freemium", "required_key", [TargetType.DOCUMENT], [EntityType.MALWARE_IOC]),
     ("hybrid_analysis", "Hybrid Analysis", "https://www.hybrid-analysis.com/", "Malware", "Análise sandbox de arquivos suspeitos", "Freemium", "required_key", [TargetType.DOCUMENT], [EntityType.MALWARE_IOC]),
+    # Phase 2 Expansion Sources (Phone OSINT & Crypto OSINT)
+    ("phone_osint", "Phone OSINT (E.164 / BrasilAPI DDD / ANATEL)", "https://brasilapi.com.br/api/ddd/v1/", "Phone OSINT", "Validação E.164, DDD, UF, operadora e tipo de linha", "Gratuito", "none", [TargetType.PHONE], [EntityType.PHONE, EntityType.LOCATION]),
+    ("numverify", "Numverify API", "https://numverify.com/", "Phone OSINT", "Validação, operadora, tipo de linha e geolocalização", "Freemium", "required_key", [TargetType.PHONE], [EntityType.PHONE, EntityType.LOCATION]),
+    ("twilio_lookup", "Twilio Lookup API", "https://www.twilio.com/docs/lookup", "Phone OSINT", "Validação, carrier, line type e SIM swap", "Freemium", "required_key", [TargetType.PHONE], [EntityType.PHONE]),
+    ("phoneinfoga", "PhoneInfoga", "https://sundowndev.github.io/phoneinfoga/", "Phone OSINT", "Enumeração e reconhecimento open source de números", "Gratuito", "none", [TargetType.PHONE], [EntityType.PHONE]),
+    ("fonefinder", "FoneFinder", "https://www.fonefinder.net/", "Phone OSINT", "Operadora, região e tipo de número", "Gratuito", "none", [TargetType.PHONE], [EntityType.PHONE]),
+    ("crypto_osint", "Crypto OSINT (Blockchain Explorer / Blockchair / Sanctions)", "https://www.blockchain.com/explorer", "Cripto OSINT", "Carteiras, saldo, transações, contrapartes e sanções OFAC/OpenSanctions", "Gratuito", "none", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET, EntityType.CRYPTO_TRANSACTION, EntityType.SANCTION]),
+    ("etherscan", "Etherscan API", "https://docs.etherscan.io/", "Cripto OSINT", "Transações, tokens, contratos e endereços Ethereum", "Freemium", "optional_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET, EntityType.CRYPTO_TRANSACTION]),
+    ("bscscan", "BscScan API", "https://docs.bscscan.com/", "Cripto OSINT", "Carteiras e transações da BNB Chain", "Freemium", "optional_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET]),
+    ("polygonscan", "PolygonScan API", "https://docs.polygonscan.com/", "Cripto OSINT", "Carteiras e transações da rede Polygon", "Freemium", "optional_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET]),
+    ("solscan", "Solscan API", "https://pro-api.solscan.io/", "Cripto OSINT", "Transações e carteiras Solana", "Freemium", "optional_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET]),
+    ("tronscan", "Tronscan API", "https://tronscan.org/", "Cripto OSINT", "Transações e carteiras Tron (TRC-20)", "Gratuito", "none", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET]),
+    ("blockchair", "Blockchair Multi-Chain", "https://blockchair.com/api", "Cripto OSINT", "Busca multi-blockchain (BTC, ETH, LTC, DOGE, SOL)", "Freemium", "optional_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET, EntityType.CRYPTO_TRANSACTION]),
+    ("blockcypher", "BlockCypher API", "https://www.blockcypher.com/dev/", "Cripto OSINT", "Dados on-chain de Bitcoin e redes compatíveis", "Freemium", "optional_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_WALLET]),
+    ("arkham", "Arkham Intelligence", "https://platform.arkhamintelligence.com/", "Cripto OSINT", "Atribuição de entidades, exchanges e fluxo de carteiras", "Freemium", "required_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_CLUSTER, EntityType.CRYPTO_WALLET]),
+    ("whale_alert", "Whale Alert", "https://whale-alert.io/", "Cripto OSINT", "Monitoramento de grandes transferências on-chain em tempo real", "Freemium", "required_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_TRANSACTION]),
+    ("cryptoscamdb", "CryptoScamDB", "https://cryptoscamdb.org/", "Cripto OSINT", "Endereços cripto e domínios associados a golpes reportados", "Gratuito", "none", [TargetType.CRYPTO_ADDRESS, TargetType.DOMAIN], [EntityType.SANCTION]),
 ]
 
 # Brazilian OSINT catalog from `apis-osint-brasil.md`

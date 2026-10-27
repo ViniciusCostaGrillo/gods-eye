@@ -40,6 +40,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[str]] = {
             "source:manage",
             "audit:read",
             "webhook:manage",
+            "watchlist:manage",
+            "alert:acknowledge",
+            "collaboration:write",
+            "quality:manage",
+            "ai:review",
         }
     ),
     Role.INVESTIGATOR: frozenset(
@@ -53,6 +58,11 @@ ROLE_PERMISSIONS: dict[Role, frozenset[str]] = {
             "collection:cancel",
             "evidence:read",
             "report:export",
+            "watchlist:manage",
+            "alert:acknowledge",
+            "collaboration:write",
+            "quality:manage",
+            "ai:review",
         }
     ),
     Role.ANALYST: frozenset(
@@ -62,6 +72,9 @@ ROLE_PERMISSIONS: dict[Role, frozenset[str]] = {
             "target:read",
             "evidence:read",
             "report:export",
+            "alert:acknowledge",
+            "collaboration:write",
+            "ai:review",
         }
     ),
     Role.AUDITOR: frozenset(

@@ -29,7 +29,7 @@
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](#)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688?logo=fastapi&logoColor=white)](#)
-[![OSINT Sources](https://img.shields.io/badge/OSINT_Catalog-118_APIs-gold)](#)
+[![OSINT Sources](https://img.shields.io/badge/OSINT_Catalog-135%2B_APIs-gold)](#)
 [![Platform](https://img.shields.io/badge/Platform-Windows_%7C_Linux_%7C_Kali_Linux-informational)](#)
 [![Compliance](https://img.shields.io/badge/Compliance-LGPD_%26_GDPR_By_Design-success)](#)
 
@@ -46,7 +46,16 @@
 **God's Eye (`𓂀`)** is an enterprise-grade, event-driven Open Source Intelligence (OSINT) aggregation, correlation, and threat intelligence platform designed for defensive cybersecurity analysts, SOC teams, threat hunters, and incident responders.
 
 Unlike monolithic scrapers, **God's Eye** operates as a **provenance-first aggregation and correlation hub**:
-- **118 Curated OSINT Sources**: 100 Global OSINT APIs ([`100-apis-osint-gratuitas.md`](100-apis-osint-gratuitas.md)) + 18 specialized Brazilian public/official sources ([`apis-osint-brasil.md`](apis-osint-brasil.md)).
+- **135+ Curated OSINT Sources + Dynamic OSINT Brazuca Importer**: 100 Global OSINT APIs ([`100-apis-osint-gratuitas.md`](100-apis-osint-gratuitas.md)) + 18 specialized Brazilian public/official sources ([`apis-osint-brasil.md`](apis-osint-brasil.md)) + Phase 2 expansion sources ([`expansao-osint-modulos-fontes-apis.md`](expansao-osint-modulos-fontes-apis.md)) including **OSINT Brazuca** dynamic candidate catalog governance.
+- **First-Class Multi-Domain OSINT Collectors**:
+  - **Phone OSINT**: ITU-T E.164 normalization, Brazilian DDD/UF regional lookup (`BrasilAPI DDD`), and ANATEL telecom carrier/line-type metadata.
+  - **Crypto OSINT**: Multi-chain wallet, transaction, and cluster intelligence (`Bitcoin`, `Ethereum`, `TRON`, `Solana`) with OFAC SDN / OpenSanctions compliance screening.
+  - **Dark Web, Pastes & Infostealer Exposure Metadata**: Queries Hudson Rock Cavalier API for corporate/email infostealer metadata strictly without storing raw dumps or passwords.
+  - **Media & Image EXIF Verification**: SHA-256 cryptographic hashing and header inspection for image/document evidence.
+- **Watchlists & Continuous Monitoring Alerts**: Subscribe to 13 granular OSINT event types (`breach.detected`, `sanction.detected`, `crypto.address_flagged`, `domain.subdomain_discovered`, `official_gazette.mention_detected`, etc.) with real-time alert generation and analyst acknowledgment.
+- **Investigative Collaboration & 4-Eyes Verification**: Analyst comments with `@mentions`, assigned investigative tasks, human verification records (`corroborated`, `contested`, `false_positive`), and immutable SHA-256 versioned dossier snapshots.
+- **Data Quality Scoring & Conflict Governance**: Multi-factor confidence formula (`source_trust + recency + corroboration + official_bonus - conflict_penalty - stale_penalty`) and automatic detection of inter-source attribute contradictions (`DataConflict`).
+- **Auditable Assistive AI**: Generates executive summaries and conflict explanations explicitly marked `confidence_kind="model_generated"` and `human_review_status="pending_review"` requiring human analyst approval.
 - **Cascading Multi-Hop Discovery**: Automatically pivots across related entities (e.g., `Email` → `Domain` & `Username` → `RDAP / DNS DoH / Certificate Transparency (crt.sh) / Wayback / urlscan.io` → `Resolved IP` → `Shodan InternetDB Ports & CVEs / GeoIP / RIPEstat BGP`).
 - **Evidence-First & SHA-256 Provenance**: Every raw finding is sanitized, hashed (`SHA-256`), timestamped, versioned, and stored before entity normalization or graph correlation.
 - **Resilient Rate-Limit & Backoff Engine**: Per-source proactive `TokenBucket` throttling, `Retry-After` (seconds & HTTP-date) and `x-ratelimit-reset` header parsing, full-jitter exponential backoff, and per-source `CircuitBreaker`.
@@ -182,8 +191,14 @@ godseye scan example.com
 | Command | Description | Example |
 |---|---|---|
 | `godseye` / `godseye banner` | Render the **Eye of Horus (`𓂀`)** emblem and command overview | `godseye` |
-| `godseye scan <target>` | Run cascading OSINT collection, entity resolution & correlation | `godseye scan example.com --depth 2` |
-| `godseye sources` | List the 118 cataloged Global & Brazilian OSINT APIs | `godseye sources --region brasil` |
+| `godseye scan <target>` | Run cascading OSINT collection (Email, Domain, IP, CNPJ, CEP, Username, Phone, Crypto, Image) | `godseye scan +5511999998888` |
+| `godseye watchlist` | Create or list continuous monitoring watchlists & alert rules | `godseye watchlist --create example.com` |
+| `godseye alerts` | View and acknowledge triggered continuous monitoring alerts | `godseye alerts --unack` |
+| `godseye brazuca` | Import & approve candidate Brazilian sources from OSINT Brazuca | `godseye brazuca --import` |
+| `godseye quality <case_id>` | Compute multi-factor Data Quality Scores & inter-source conflicts | `godseye quality <case_id>` |
+| `godseye ai-assist <case_id>` | Generate or review auditable Assistive AI analysis (`model_generated`) | `godseye ai-assist <case_id>` |
+| `godseye collaborate <case_id>` | Add `@mention` comments, tasks, 4-eyes verifications & snapshots | `godseye collaborate <case_id> -m "Check @alice"` |
+| `godseye sources` | List the 135+ cataloged Global & Brazilian OSINT APIs | `godseye sources --region brasil` |
 | `godseye cases` | List all investigative cases and LGPD/GDPR legal bases | `godseye cases` |
 | `godseye graph <case_id>` | Render ASCII relationship graph or `--mermaid` diagram | `godseye graph <case_id> --mermaid` |
 | `godseye timeline <case_id>` | Display chronological collection & correlation timeline | `godseye timeline <case_id>` |
@@ -202,8 +217,18 @@ godseye scan example.com
 
 O **God's Eye (`𓂀` — Olho de Hórus)** é uma plataforma e ferramenta CLI de **OSINT (*Open Source Intelligence*)**, agregação de fontes abertas, resolução de entidades e correlação investigativa voltada para analistas de cibersegurança, equipes de SOC, CTI (*Cyber Threat Intelligence*), resposta a incidentes e compliance.
 
-Construído a partir das especificações de [`documentacao-backend-agregador-osint.md`](documentacao-backend-agregador-osint.md), [`100-apis-osint-gratuitas.md`](100-apis-osint-gratuitas.md) e [`apis-osint-brasil.md`](apis-osint-brasil.md), o **God's Eye** segue os princípios:
-- **118 Fontes OSINT Catalogadas**: 100 APIs Globais + 18 fontes oficiais e abertas do Brasil (**Receita Federal / BrasilAPI CNPJ & QSA, ViaCEP / BrasilAPI CEP, IBGE Localidades, Querido Diário, Portal da Transparência CEIS/CNEP/CEAF/CEPIM, DataJud/CNJ, TSE, PNCP, INPI, CVM, BACEN, ANVISA, Senatran**).
+Construído a partir das especificações de [`documentacao-backend-agregador-osint.md`](documentacao-backend-agregador-osint.md), [`100-apis-osint-gratuitas.md`](100-apis-osint-gratuitas.md), [`apis-osint-brasil.md`](apis-osint-brasil.md) e [`expansao-osint-modulos-fontes-apis.md`](expansao-osint-modulos-fontes-apis.md), o **God's Eye** segue os princípios:
+- **135+ Fontes OSINT Catalogadas + Importador Dinâmico OSINT Brazuca**: 100 APIs Globais + 18 fontes oficiais e abertas do Brasil + módulos de expansão da Fase 2 com importação governada de fontes candidatas (`SourceReviewStatus.CANDIDATE` → aprovação humana obrigatória).
+- **Novos Coletores de Primeira Classe (Fase 2)**:
+  - **Phone OSINT (`phone_osint`)**: Normalização E.164, consulta de DDD/UF e municípios via `BrasilAPI DDD`, tipo de linha (`mobile`/`landline`) e metadados regulatórios da ANATEL.
+  - **Crypto OSINT (`crypto_osint`)**: Detecção automática de rede (`Bitcoin`, `Ethereum`, `TRON`, `Solana`), saldo/transações on-chain e triagem de risco contra listas de sanções (`OFAC SDN / OpenSanctions`).
+  - **Dark Web, Pastes & Infostealers (`hudsonrock`)**: Consulta pública à API Cavalier da Hudson Rock retornando exclusivamente metadados de exposição por infostealers (sem jamais armazenar senhas ou *dumps* brutos).
+  - **Verificação de Mídia e EXIF (`image_exif`)**: Hash criptográfico SHA-256 e inspeção de cabeçalhos de arquivos de imagem/evidência.
+- **Watchlists e Alertas Contínuos**: Monitoramento contínuo de 13 tipos de eventos (`breach.detected`, `sanction.detected`, `crypto.address_flagged`, `domain.subdomain_discovered`, `official_gazette.mention_detected`, etc.) com geração de alertas e reconhecimento (`acknowledge`) auditado.
+- **Colaboração Investigativa, Qualidade de Dados e IA Assistiva Auditável**:
+  - Comentários com `@menções`, tarefas investigativas (`InvestigativeTask`), verificação humana em 4 olhos (`corroborated`, `contested`, `false_positive`) e versionamento imutável de dossiês (`CaseVersion`).
+  - Cálculo de `DataQualityScore` multi-fator e detecção automática de conflitos entre fontes (`DataConflict`).
+  - Camada de IA Assistiva (`AssistiveAIService`) com marcação estrita `confidence_kind="model_generated"` e revisão humana obrigatória (`pending_review` → `approved` / `rejected`).
 - **Descoberta em Cascata (*Multi-Hop*)**:
   - Ao investigar um **E-mail** (`usuario@empresa.com`), extrai automaticamente o **Domínio** e o **Username**, consulta `RDAP`, `DNS-over-HTTPS`, `crt.sh (Certificados TLS e Subdomínios)`, `urlscan.io`, `Wayback Machine`, `HIBP`, `GitHub` e `Keybase`, e pivota para os **IPs resolvidos** consultando portas e CVEs no `Shodan InternetDB`, geolocalização no `ip-api` e roteamento BGP no `RIPEstat`.
   - Ao investigar um **CNPJ** (`00.000.000/0001-91`), consulta dados societários e **QSA (Quadro de Sócios e Administradores)** na Receita Federal/BrasilAPI, menções em **Diários Oficiais** (`Querido Diário`), sanções administrativas no **Portal da Transparência (`CEIS/CNEP`)**, metadados processuais no **DataJud/CNJ** e pivota automaticamente para o **CEP** da sede.

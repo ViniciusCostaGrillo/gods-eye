@@ -38,6 +38,7 @@ from godseye.domain.models import (
 from godseye.services.case_service import CaseService
 from godseye.services.correlation import CorrelationEngine
 from godseye.services.entity_resolution import EntityResolutionService
+from godseye.services.expansion import DataGovernanceService, WatchlistService
 from godseye.services.normalizer import NormalizationService
 
 
@@ -60,6 +61,8 @@ class InvestigationOrchestrator:
         self.normalizer = NormalizationService(repo)
         self.resolver = EntityResolutionService(repo)
         self.correlator = CorrelationEngine(repo)
+        self.watchlist_service = WatchlistService(repo, self.event_bus)
+        self.governance_service = DataGovernanceService(repo, registry)
         self._semaphore = asyncio.Semaphore(max(1, max_concurrency))
 
     async def investigate_target(
@@ -122,9 +125,15 @@ class InvestigationOrchestrator:
                             queue.append((nt, depth + 1))
 
         findings = self.correlator.evaluate_case(case_id)
+        governance = self.governance_service.evaluate_case_governance(case_id)
         await self.event_bus.publish(
             EventType.CORRELATION_MATCHED,
-            {"case_id": case_id, "findings_count": len(findings)},
+            {
+                "case_id": case_id,
+                "target": target.normalized_value,
+                "findings_count": len(findings),
+                "conflicts_count": len(governance["conflicts"]),
+            },
         )
 
         self.repo.record_audit(
@@ -153,6 +162,8 @@ class InvestigationOrchestrator:
             "entities_count": len(self.repo.list_entities(case_id)),
             "relationships_count": len(self.repo.list_relationships(case_id)),
             "findings": [f.model_dump() for f in findings],
+            "quality_scores_count": len(governance["scores"]),
+            "conflicts_count": len(governance["conflicts"]),
         }
 
     def _select_adapters(
@@ -238,6 +249,7 @@ class InvestigationOrchestrator:
                     self.repo.save_evidence(evidence)
                     norm_obs = self.normalizer.normalize_and_store(case_id, evidence, raw_obs)
                     self.resolver.resolve(norm_obs)
+                    await self._publish_observation_watchlist_events(case_id, target, raw_obs)
 
             except Exception as exc:
                 job.status = JobStatus.FAILED
@@ -316,6 +328,40 @@ class InvestigationOrchestrator:
                     cascaded.append(cep_target)
 
         return cascaded
+
+    async def _publish_observation_watchlist_events(
+        self,
+        case_id: str,
+        target: Target,
+        raw_obs: RawObservation,
+    ) -> None:
+        """Emit granular domain events for Watchlist continuous monitoring (Expansion Module 1)."""
+        payload = {
+            "case_id": case_id,
+            "target": target.normalized_value,
+            "value": raw_obs.entity_value,
+            "source_id": raw_obs.source_id,
+            "entity_type": raw_obs.entity_type.value,
+        }
+        await self.event_bus.publish(EventType.ENTITY_CREATED, payload)
+        if raw_obs.entity_type == EntityType.BREACH:
+            await self.event_bus.publish(EventType.BREACH_DETECTED, payload)
+        elif raw_obs.entity_type == EntityType.SANCTION:
+            await self.event_bus.publish(EventType.SANCTION_DETECTED, payload)
+            if target.type == TargetType.CRYPTO_ADDRESS:
+                await self.event_bus.publish(EventType.CRYPTO_ADDRESS_FLAGGED, payload)
+        elif raw_obs.entity_type == EntityType.SUBDOMAIN:
+            await self.event_bus.publish(EventType.DOMAIN_SUBDOMAIN_DISCOVERED, payload)
+        elif raw_obs.entity_type == EntityType.CERTIFICATE:
+            await self.event_bus.publish(EventType.DOMAIN_CERTIFICATE_ISSUED, payload)
+        elif raw_obs.entity_type == EntityType.EXPOSED_SERVICE:
+            await self.event_bus.publish(EventType.ENTITY_UPDATED, payload)
+        elif raw_obs.entity_type == EntityType.DOCUMENT and raw_obs.source_id == "queridodiario":
+            await self.event_bus.publish(EventType.OFFICIAL_GAZETTE_MENTION_DETECTED, payload)
+        elif raw_obs.entity_type in (EntityType.DOCUMENT, EntityType.LEGAL_CASE) and raw_obs.source_id == "datajud":
+            await self.event_bus.publish(EventType.LEGAL_CASE_CREATED, payload)
+        elif raw_obs.entity_type == EntityType.PERSON and raw_obs.source_id == "brasilapi_cnpj":
+            await self.event_bus.publish(EventType.RELATIONSHIP_CREATED, payload)
 
     async def _dispatch_webhooks(self, event_name: str, data: dict[str, Any]) -> None:
         """Deliver signed outbound webhooks to registered subscribers (api-integration skill)."""

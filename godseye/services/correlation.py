@@ -127,4 +127,49 @@ class CorrelationEngine:
             self.repo.save_finding(finding)
             new_findings.append(finding)
 
+        # Rule 6: Crypto OSINT & Sanctioned Blockchain Cluster (Expansion Module 4)
+        wallets = by_type.get(EntityType.CRYPTO_WALLET, [])
+        clusters = by_type.get(EntityType.CRYPTO_CLUSTER, [])
+        txs = by_type.get(EntityType.CRYPTO_TRANSACTION, [])
+        if (wallets or clusters or txs) and "CORR-CRYPTO-LEDGER" not in existing_rule_ids:
+            risk = RiskLevel.CRITICAL if sanctions else RiskLevel.MEDIUM
+            desc = (
+                f"Correlated {len(wallets)} crypto wallet(s), {len(txs)} ledger transaction(s), "
+                f"and {len(clusters)} cluster/counterparty link(s)."
+            )
+            if sanctions:
+                desc += f" ALERT: {len(sanctions)} OFAC/OpenSanctions risk flag(s) detected on wallet!"
+            finding = CorrelationFinding(
+                case_id=case_id,
+                rule_id="CORR-CRYPTO-LEDGER",
+                title="Cryptocurrency On-Chain Activity & Risk Screening Correlated",
+                description=desc,
+                risk=risk,
+                confidence=0.93,
+                involved_entities=(wallets[:3] + clusters[:2] + sanctions[:2]),
+                evidence_ids=evidence_ids,
+            )
+            self.repo.save_finding(finding)
+            new_findings.append(finding)
+
+        # Rule 7: Phone OSINT & E.164 / Brazilian DDD / ANATEL Correlation (Expansion Module 2)
+        phones = by_type.get(EntityType.PHONE, [])
+        locations = by_type.get(EntityType.LOCATION, [])
+        if phones and "CORR-PHONE-TELECOM" not in existing_rule_ids:
+            finding = CorrelationFinding(
+                case_id=case_id,
+                rule_id="CORR-PHONE-TELECOM",
+                title=f"Phone OSINT E.164 & Telecom Metadata Correlated ({len(phones)} Line(s))",
+                description=(
+                    f"Normalized {len(phones)} phone number(s) ({', '.join(phones[:3])}) "
+                    f"with {len(locations)} geographic DDD/state region(s) and telecom line metadata."
+                ),
+                risk=RiskLevel.INFO,
+                confidence=0.91,
+                involved_entities=(phones[:3] + locations[:2]),
+                evidence_ids=evidence_ids,
+            )
+            self.repo.save_finding(finding)
+            new_findings.append(finding)
+
         return self.repo.list_findings(case_id)

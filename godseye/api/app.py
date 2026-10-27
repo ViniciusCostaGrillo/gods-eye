@@ -14,10 +14,21 @@ from godseye.core.config import get_settings
 from godseye.core.resilience import ResilientHttpClient
 from godseye.core.security import PermissionDeniedError
 from godseye.db.repository import OsintRepository
-from godseye.domain.enums import CaseStatus, LegalBasis, Role, TargetType
+from godseye.domain.enums import (
+    CaseStatus,
+    LegalBasis,
+    RiskLevel,
+    Role,
+    TargetType,
+    VerificationStatus,
+)
 from godseye.domain.events import EventBus
 from godseye.domain.models import WebhookSubscription
 from godseye.services.case_service import CaseService
+from godseye.services.expansion import (
+    AssistiveAIService,
+    CollaborationService,
+)
 from godseye.services.orchestrator import InvestigationOrchestrator
 from godseye.services.reporting import ReportingService
 
@@ -59,6 +70,51 @@ class CreateWebhookRequest(BaseModel):
     secret: str = Field(default="")
 
 
+class CreateWatchlistRequest(BaseModel):
+    case_id: str = Field(default="")
+    value: str = Field(..., min_length=2)
+    target_type: TargetType | None = None
+    frequency: str = Field(default="realtime")
+    severity: RiskLevel = Field(default=RiskLevel.HIGH)
+
+
+class CreateCommentRequest(BaseModel):
+    body: str = Field(..., min_length=1)
+    entity_id: str | None = None
+    evidence_id: str | None = None
+
+
+class CreateTaskRequest(BaseModel):
+    title: str = Field(..., min_length=2, max_length=200)
+    description: str = ""
+    assignee_id: str = "sec-analyst"
+    due_date: str | None = None
+
+
+class UpdateTaskStatusRequest(BaseModel):
+    status: str = Field(default="done")
+
+
+class CreateVerificationRequest(BaseModel):
+    entity_id: str | None = None
+    relationship_id: str | None = None
+    evidence_id: str | None = None
+    status: VerificationStatus = Field(default=VerificationStatus.CORROBORATED)
+    reason: str = Field(default="Analyst 4-eyes verification")
+
+
+class CreateCaseVersionRequest(BaseModel):
+    change_summary: str = Field(default="Analyst case snapshot")
+
+
+class CreateAIAssistRequest(BaseModel):
+    task_type: str = Field(default="dossier_summary")
+
+
+class ReviewAIAssistRequest(BaseModel):
+    decision: str = Field(default="approved")
+
+
 class AppContainer:
     """Dependency container holding database, cache, HTTP client, and services."""
 
@@ -86,6 +142,10 @@ class AppContainer:
             event_bus=self.event_bus,
             max_concurrency=settings.max_concurrency,
         )
+        self.watchlist_service = self.orchestrator.watchlist_service
+        self.governance_service = self.orchestrator.governance_service
+        self.collaboration_service = CollaborationService(self.repo)
+        self.ai_service = AssistiveAIService(self.repo)
         self.reporting = ReportingService(self.repo)
 
     async def shutdown(self) -> None:
@@ -401,5 +461,288 @@ def create_app(db_path: str | None = None) -> FastAPI:
         case_id: Annotated[str | None, Query()] = None,
     ) -> list[dict[str, Any]]:
         return container.case_service.list_audit_log(case_id=case_id, actor_role=role)
+
+    # --- Expansion Module 1: Watchlists & Continuous Alerts ---
+    @app.post("/api/v1/watchlists", status_code=status.HTTP_201_CREATED, tags=["Watchlists & Alerts"])
+    async def create_watchlist(
+        payload: CreateWatchlistRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        wl = container.watchlist_service.create_watchlist(
+            case_id=payload.case_id,
+            value=payload.value,
+            target_type=payload.target_type,
+            frequency=payload.frequency,
+            severity=payload.severity,
+            owner=actor,
+            actor_role=role,
+        )
+        return wl.model_dump()
+
+    @app.get("/api/v1/watchlists", tags=["Watchlists & Alerts"])
+    async def list_watchlists(
+        role: Annotated[Role, Depends(get_actor_role)],
+        case_id: Annotated[str | None, Query()] = None,
+    ) -> list[dict[str, Any]]:
+        return [
+            w.model_dump()
+            for w in container.watchlist_service.list_watchlists(case_id=case_id, actor_role=role)
+        ]
+
+    @app.get("/api/v1/alerts", tags=["Watchlists & Alerts"])
+    async def list_alerts(
+        role: Annotated[Role, Depends(get_actor_role)],
+        watchlist_id: Annotated[str | None, Query()] = None,
+        case_id: Annotated[str | None, Query()] = None,
+        unacknowledged_only: Annotated[bool, Query()] = False,
+    ) -> list[dict[str, Any]]:
+        return [
+            a.model_dump()
+            for a in container.watchlist_service.list_alerts(
+                watchlist_id=watchlist_id,
+                case_id=case_id,
+                unacknowledged_only=unacknowledged_only,
+                actor_role=role,
+            )
+        ]
+
+    @app.post("/api/v1/alerts/{alert_id}/acknowledge", tags=["Watchlists & Alerts"])
+    async def acknowledge_alert(
+        alert_id: str,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        alert = container.watchlist_service.acknowledge_alert(
+            alert_id=alert_id, actor_id=actor, actor_role=role
+        )
+        if alert is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        return alert.model_dump()
+
+    # --- Expansion Module 3: OSINT Brazuca Dynamic Catalog & Source Governance ---
+    @app.post("/api/v1/catalog/import-brazuca", tags=["Sources"])
+    async def import_brazuca_catalog(
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        from godseye.core.security import check_permission
+
+        check_permission(role, "source:manage")
+        candidates = container.registry.import_brazuca_catalog()
+        return {
+            "imported_count": len(candidates),
+            "status": "candidate",
+            "sources": [c.model_dump() for c in candidates],
+        }
+
+    @app.post("/api/v1/sources/{source_id}/approve", tags=["Sources"])
+    async def approve_candidate_source(
+        source_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        from godseye.core.security import check_permission
+
+        check_permission(role, "source:manage")
+        meta = container.registry.approve_candidate_source(source_id)
+        if meta is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return meta.model_dump()
+
+    # --- Expansion Module 6: Investigative Collaboration ---
+    @app.post("/api/v1/cases/{case_id}/comments", status_code=status.HTTP_201_CREATED, tags=["Collaboration"])
+    async def add_case_comment(
+        case_id: str,
+        payload: CreateCommentRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        if container.repo.get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        comment = container.collaboration_service.add_comment(
+            case_id=case_id,
+            body=payload.body,
+            author_id=actor,
+            entity_id=payload.entity_id,
+            evidence_id=payload.evidence_id,
+            actor_role=role,
+        )
+        return comment.model_dump()
+
+    @app.get("/api/v1/cases/{case_id}/comments", tags=["Collaboration"])
+    async def list_case_comments(
+        case_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> list[dict[str, Any]]:
+        return [
+            c.model_dump()
+            for c in container.collaboration_service.list_comments(case_id, actor_role=role)
+        ]
+
+    @app.post("/api/v1/cases/{case_id}/tasks", status_code=status.HTTP_201_CREATED, tags=["Collaboration"])
+    async def create_case_task(
+        case_id: str,
+        payload: CreateTaskRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        if container.repo.get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        task = container.collaboration_service.create_task(
+            case_id=case_id,
+            title=payload.title,
+            description=payload.description,
+            assignee_id=payload.assignee_id,
+            due_date=payload.due_date,
+            created_by=actor,
+            actor_role=role,
+        )
+        return task.model_dump()
+
+    @app.get("/api/v1/cases/{case_id}/tasks", tags=["Collaboration"])
+    async def list_case_tasks(
+        case_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> list[dict[str, Any]]:
+        return [
+            t.model_dump()
+            for t in container.collaboration_service.list_tasks(case_id, actor_role=role)
+        ]
+
+    @app.patch("/api/v1/cases/{case_id}/tasks/{task_id}", tags=["Collaboration"])
+    async def update_task_status(
+        case_id: str,
+        task_id: str,
+        payload: UpdateTaskStatusRequest,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        task = container.collaboration_service.update_task_status(
+            case_id=case_id,
+            task_id=task_id,
+            status=payload.status,
+            actor_role=role,
+        )
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task.model_dump()
+
+    @app.post("/api/v1/cases/{case_id}/verifications", status_code=status.HTTP_201_CREATED, tags=["Collaboration"])
+    async def record_verification(
+        case_id: str,
+        payload: CreateVerificationRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        if container.repo.get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        ver = container.collaboration_service.verify_finding(
+            case_id=case_id,
+            status=payload.status,
+            reason=payload.reason,
+            entity_id=payload.entity_id,
+            relationship_id=payload.relationship_id,
+            evidence_id=payload.evidence_id,
+            reviewer_id=actor,
+            actor_role=role,
+        )
+        return ver.model_dump()
+
+    @app.get("/api/v1/cases/{case_id}/verifications", tags=["Collaboration"])
+    async def list_verifications(
+        case_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> list[dict[str, Any]]:
+        return [
+            v.model_dump()
+            for v in container.collaboration_service.list_verifications(case_id, actor_role=role)
+        ]
+
+    @app.post("/api/v1/cases/{case_id}/versions", status_code=status.HTTP_201_CREATED, tags=["Collaboration"])
+    async def create_case_version(
+        case_id: str,
+        payload: CreateCaseVersionRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        if container.repo.get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        dossier = container.reporting.generate_dossier(
+            case_id=case_id, export_format="json", actor_id=actor, actor_role=role
+        )
+        ver = container.collaboration_service.create_case_version(
+            case_id=case_id,
+            change_summary=payload.change_summary,
+            dossier_payload=dossier,
+            created_by=actor,
+            actor_role=role,
+        )
+        return ver.model_dump()
+
+    @app.get("/api/v1/cases/{case_id}/versions", tags=["Collaboration"])
+    async def list_case_versions(
+        case_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> list[dict[str, Any]]:
+        return [
+            v.model_dump()
+            for v in container.collaboration_service.list_case_versions(case_id, actor_role=role)
+        ]
+
+    # --- Expansion Module 7: Data Quality & Governance ---
+    @app.get("/api/v1/cases/{case_id}/quality", tags=["Data Governance"])
+    async def get_case_quality(
+        case_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        from godseye.core.security import check_permission
+
+        check_permission(role, "case:read")
+        if container.repo.get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        return container.governance_service.evaluate_case_governance(case_id)
+
+    # --- Expansion Module 8: Auditable Assistive AI ---
+    @app.post("/api/v1/cases/{case_id}/ai-assist", status_code=status.HTTP_201_CREATED, tags=["Assistive AI"])
+    async def generate_ai_assistance(
+        case_id: str,
+        payload: CreateAIAssistRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        if container.repo.get_case(case_id) is None:
+            raise HTTPException(status_code=404, detail="Case not found")
+        inf = container.ai_service.generate_case_analysis(
+            case_id=case_id,
+            task_type=payload.task_type,
+            actor_id=actor,
+            actor_role=role,
+        )
+        return inf.model_dump()
+
+    @app.get("/api/v1/cases/{case_id}/ai-assist", tags=["Assistive AI"])
+    async def list_ai_inferences(
+        case_id: str,
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> list[dict[str, Any]]:
+        return [
+            i.model_dump()
+            for i in container.ai_service.list_inferences(case_id=case_id, actor_role=role)
+        ]
+
+    @app.post("/api/v1/ai-assist/{inference_id}/review", tags=["Assistive AI"])
+    async def review_ai_inference(
+        inference_id: str,
+        payload: ReviewAIAssistRequest,
+        actor: Annotated[str, Depends(get_actor_id)],
+        role: Annotated[Role, Depends(get_actor_role)],
+    ) -> dict[str, Any]:
+        inf = container.ai_service.review_inference(
+            inference_id=inference_id,
+            decision=payload.decision,
+            reviewer_id=actor,
+            actor_role=role,
+        )
+        if inf is None:
+            raise HTTPException(status_code=404, detail="AI inference not found")
+        return inf.model_dump()
 
     return app

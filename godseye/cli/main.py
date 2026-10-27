@@ -16,7 +16,13 @@ from godseye.core.banner import (
     configure_terminal_utf8,
     render_banner,
 )
-from godseye.domain.enums import LegalBasis, Role, TargetType
+from godseye.domain.enums import (
+    LegalBasis,
+    RiskLevel,
+    Role,
+    TargetType,
+    VerificationStatus,
+)
 from godseye.services.case_service import detect_target_type
 
 configure_terminal_utf8()
@@ -42,8 +48,38 @@ def _display_quick_help() -> None:
 
     table.add_row(
         "godseye scan <target>",
-        "Run cascading OSINT investigation on Email, Domain, IP, CNPJ, CEP, or Username",
-        "godseye scan example.com",
+        "Run cascading OSINT on Email, Domain, IP, CNPJ, CEP, Username, Phone, Crypto, or Image",
+        "godseye scan +5511999998888",
+    )
+    table.add_row(
+        "godseye watchlist",
+        "Manage continuous OSINT watchlists & alert rules (13 monitored event types)",
+        "godseye watchlist --create 'VIP Domains' --targets example.com",
+    )
+    table.add_row(
+        "godseye alerts",
+        "View and acknowledge continuous monitoring OSINT alerts",
+        "godseye alerts",
+    )
+    table.add_row(
+        "godseye brazuca",
+        "Import & approve candidate Brazilian sources from OSINT Brazuca catalog",
+        "godseye brazuca --import",
+    )
+    table.add_row(
+        "godseye quality <case_id>",
+        "Compute Data Quality Scores & inter-source conflict reports",
+        "godseye quality <case_id>",
+    )
+    table.add_row(
+        "godseye ai-assist <case_id>",
+        "Generate auditable assistive AI summaries/hypotheses (model_generated + human review)",
+        "godseye ai-assist <case_id> --task executive_summary",
+    )
+    table.add_row(
+        "godseye collaborate <case_id>",
+        "Add analyst @mention comments, tasks, verifications, and case snapshots",
+        "godseye collaborate <case_id> --comment 'Verified @alice'",
     )
     table.add_row(
         "godseye sources",
@@ -537,6 +573,262 @@ def cmd_serve(
     )
     fastapi_app = create_app()
     uvicorn.run(fastapi_app, host=host, port=port)
+
+
+@app.command("watchlist")
+def cmd_watchlist(
+    target_value: str | None = typer.Option(None, "--create", "-n", help="Create a watchlist monitoring this target value"),
+    case_id: str = typer.Option("global", "--case", "-c", help="Case ID to link watchlist"),
+    frequency: str = typer.Option("realtime", "--freq", help="Frequency: realtime, hourly, daily"),
+    min_risk: str = typer.Option("high", "--min-risk", help="Severity level (info, low, medium, high, critical)"),
+) -> None:
+    """Create or list continuous OSINT watchlists & alert rules (Expansion Module 1)."""
+    container = AppContainer()
+    try:
+        if target_value:
+            wl = container.watchlist_service.create_watchlist(
+                case_id=case_id,
+                value=target_value,
+                frequency=frequency,
+                severity=RiskLevel(min_risk.lower()),
+            )
+            console.print(
+                f"[bold green]✔ Watchlist created:[/bold green] [gold1]{wl.id}[/gold1] monitoring {wl.value} ({wl.type.value})"
+            )
+        items = container.watchlist_service.list_watchlists()
+        table = Table(
+            title=f"{EYE_OF_HORUS_GLYPH} Continuous OSINT Watchlists ({len(items)})",
+            border_style="gold1",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Watchlist ID", style="bold cyan")
+        table.add_column("Case ID", style="white")
+        table.add_column("Target Value", style="yellow")
+        table.add_column("Type", style="green")
+        table.add_column("Frequency", justify="right")
+        for w in items:
+            table.add_row(
+                w.id,
+                w.case_id,
+                w.value,
+                w.type.value.upper(),
+                w.frequency,
+            )
+        console.print(table)
+    finally:
+        asyncio.run(container.shutdown())
+
+
+@app.command("alerts")
+def cmd_alerts(
+    ack_id: str | None = typer.Option(None, "--ack", "-a", help="Acknowledge an alert by ID"),
+    unack_only: bool = typer.Option(False, "--unack", "-u", help="Show only unacknowledged alerts"),
+) -> None:
+    """View and acknowledge continuous monitoring OSINT alerts (Expansion Module 1)."""
+    container = AppContainer()
+    try:
+        if ack_id:
+            updated = container.watchlist_service.acknowledge_alert(ack_id)
+            if updated:
+                console.print(f"[bold green]✔ Alert acknowledged:[/bold green] {updated.id}")
+        items = container.watchlist_service.list_alerts(unacknowledged_only=unack_only)
+        table = Table(
+            title=f"{EYE_OF_HORUS_GLYPH} Watchlist Continuous Monitoring Alerts ({len(items)})",
+            border_style="red",
+            header_style="bold bright_red",
+        )
+        table.add_column("Alert ID", style="bold cyan")
+        table.add_column("Source", style="gold1")
+        table.add_column("Severity", style="bold red")
+        table.add_column("Message", style="white")
+        table.add_column("Ack", justify="center")
+        for a in items:
+            ack_str = "[green]YES[/green]" if a.acknowledged_at else "[bold red]NO[/bold red]"
+            table.add_row(a.id, a.source_id, a.severity.value.upper(), a.message, ack_str)
+        console.print(table)
+    finally:
+        asyncio.run(container.shutdown())
+
+
+@app.command("brazuca")
+def cmd_brazuca(
+    do_import: bool = typer.Option(False, "--import", "-i", help="Import candidate sources from OSINT Brazuca"),
+    approve_id: str | None = typer.Option(None, "--approve", "-a", help="Approve a candidate source ID after human review"),
+) -> None:
+    """Import & govern candidate Brazilian sources from OSINT Brazuca (Expansion Module 3)."""
+    container = AppContainer()
+    try:
+        if do_import:
+            imported = container.registry.import_brazuca_catalog()
+            console.print(
+                f"[bold green]✔ Imported {len(imported)} OSINT Brazuca sources as CANDIDATE (pending human review).[/bold green]"
+            )
+        if approve_id:
+            approved = container.registry.approve_candidate_source(approve_id)
+            if approved:
+                console.print(
+                    f"[bold green]✔ Approved source {approved.id}:[/bold green] status={approved.status.value}, enabled={approved.enabled}"
+                )
+        brazuca_sources = [
+            s for s in container.registry.list_sources(region="brasil")
+            if s.id.startswith("brazuca_")
+        ]
+        table = Table(
+            title=f"{EYE_OF_HORUS_GLYPH} OSINT Brazuca Dynamic Catalog ({len(brazuca_sources)} Candidate/Reviewed Sources)",
+            border_style="gold1",
+            header_style="bold bright_cyan",
+        )
+        table.add_column("Source ID", style="bold cyan")
+        table.add_column("Name", style="white")
+        table.add_column("Category", style="gold1")
+        table.add_column("Review Status", style="yellow")
+        table.add_column("Enabled", justify="center")
+        for s in brazuca_sources:
+            en_badge = "[green]YES[/green]" if s.enabled else "[red]NO[/red]"
+            table.add_row(s.id, s.name, s.category, s.status.value.upper(), en_badge)
+        console.print(table)
+    finally:
+        asyncio.run(container.shutdown())
+
+
+@app.command("quality")
+def cmd_quality(
+    case_id: str = typer.Argument(..., help="Case ID to evaluate data quality & conflicts"),
+) -> None:
+    """Compute Data Quality Scores & inter-source conflict reports for a case (Expansion Module 7)."""
+    container = AppContainer()
+    try:
+        res = container.governance_service.evaluate_case_governance(case_id)
+        scores_table = Table(
+            title=f"{EYE_OF_HORUS_GLYPH} Data Quality Scores — Case {case_id} ({res['scores_calculated']} observations)",
+            border_style="cyan",
+            header_style="bold gold1",
+        )
+        scores_table.add_column("Observation ID", style="cyan")
+        scores_table.add_column("Final Score", justify="right", style="bold green")
+        scores_table.add_column("Source Trust", justify="right")
+        scores_table.add_column("Recency", justify="right")
+        scores_table.add_column("Corroboration", justify="right")
+        scores_table.add_column("Explanation", style="dim")
+        for s in res["scores"]:
+            scores_table.add_row(
+                (s["observation_id"] or "-")[:12],
+                f"{s['final_score']:.3f}",
+                f"{s['source_trust']:.2f}",
+                f"{s['recency']:.2f}",
+                str(s["corroboration_count"]),
+                s["explanation"],
+            )
+        console.print(scores_table)
+
+        if res["conflicts"]:
+            conf_table = Table(
+                title=f"{EYE_OF_HORUS_GLYPH} Detected Inter-Source Conflicts ({res['conflicts_detected']})",
+                border_style="red",
+                header_style="bold bright_red",
+            )
+            conf_table.add_column("Entity ID", style="bold yellow")
+            conf_table.add_column("Conflict Type", style="cyan")
+            conf_table.add_column("Description", style="white")
+            for c in res["conflicts"]:
+                conf_table.add_row(c["entity_id"], c["conflict_type"], c["description"])
+            console.print(conf_table)
+    finally:
+        asyncio.run(container.shutdown())
+
+
+@app.command("ai-assist")
+def cmd_ai_assist(
+    case_id: str = typer.Argument(..., help="Case ID for assistive AI analysis"),
+    task_type: str = typer.Option(
+        "dossier_summary",
+        "--task",
+        "-t",
+        help="Task: dossier_summary, hypothesis_suggestion, conflict_explanation, query_translation",
+    ),
+    approve_id: str | None = typer.Option(None, "--approve", "-a", help="Approve an AI inference ID after human review"),
+) -> None:
+    """Generate or review auditable Assistive AI analysis (marked model_generated; requires human review)."""
+    container = AppContainer()
+    try:
+        if approve_id:
+            reviewed = container.ai_service.review_inference(
+                approve_id, decision="approved", reviewer_id="sec-analyst"
+            )
+            if reviewed:
+                console.print(
+                    f"[bold green]✔ AI Inference {reviewed.id} reviewed:[/bold green] status={reviewed.human_review_status}"
+                )
+        else:
+            inf = container.ai_service.generate_case_analysis(case_id=case_id, task_type=task_type)
+            console.print(
+                Panel(
+                    f"[bold yellow]confidence_kind={inf.confidence_kind} | human_review_status={inf.human_review_status.upper()}[/bold yellow]\n"
+                    f"[dim]Evidence IDs cited: {len(inf.input_evidence_ids)} | Prompt Hash: {inf.prompt_hash[:16]}...[/dim]\n\n"
+                    f"{inf.output}",
+                    title=f"{EYE_OF_HORUS_GLYPH} Assistive AI ({inf.task_type}) — ID: {inf.id}",
+                    border_style="gold1",
+                )
+            )
+    finally:
+        asyncio.run(container.shutdown())
+
+
+@app.command("collaborate")
+def cmd_collaborate(
+    case_id: str = typer.Argument(..., help="Case ID to collaborate on"),
+    comment: str | None = typer.Option(None, "--comment", "-m", help="Add comment (supports @mentions)"),
+    task_title: str | None = typer.Option(None, "--task", "-t", help="Create an investigative task"),
+    assignee: str = typer.Option("sec-analyst", "--assignee", help="Task assignee"),
+    verify_subject: str | None = typer.Option(None, "--verify", "-v", help="Entity ID to record 4-eyes verification"),
+    verify_status: str = typer.Option("corroborated", "--status", help="Verification status: corroborated, contested, false_positive"),
+    snapshot_note: str | None = typer.Option(None, "--snapshot", "-s", help="Create a versioned case snapshot with note"),
+) -> None:
+    """Collaborate on a case: @mention comments, tasks, 4-eyes verification, and snapshots (Expansion Module 6)."""
+    container = AppContainer()
+    try:
+        if comment:
+            c = container.collaboration_service.add_comment(case_id=case_id, body=comment)
+            console.print(
+                f"[bold green]✔ Comment added ({c.id}):[/bold green] mentions={c.mentions}"
+            )
+        if task_title:
+            t = container.collaboration_service.create_task(
+                case_id=case_id, title=task_title, assignee_id=assignee
+            )
+            console.print(
+                f"[bold green]✔ Investigative Task created ({t.id}):[/bold green] {t.title} -> @{t.assignee_id}"
+            )
+        if verify_subject:
+            v = container.collaboration_service.verify_finding(
+                case_id=case_id,
+                entity_id=verify_subject,
+                status=VerificationStatus(verify_status.lower()),
+                reason="4-eyes analyst verification via CLI",
+            )
+            console.print(
+                f"[bold green]✔ Verification recorded ({v.id}):[/bold green] {v.entity_id} = {v.status.value.upper()}"
+            )
+        if snapshot_note:
+            dossier = container.reporting.generate_dossier(case_id=case_id)
+            snap = container.collaboration_service.create_case_version(
+                case_id=case_id, change_summary=snapshot_note, dossier_payload=dossier
+            )
+            console.print(
+                f"[bold green]✔ Case Version v{snap.version} saved ({snap.id}):[/bold green] hash={snap.snapshot_hash[:16]}..."
+            )
+
+        comments = container.collaboration_service.list_comments(case_id)
+        tasks = container.collaboration_service.list_tasks(case_id)
+        verifications = container.collaboration_service.list_verifications(case_id)
+        versions = container.collaboration_service.list_case_versions(case_id)
+        console.print(
+            f"[cyan]Collaboration Summary for Case {case_id}:[/cyan] "
+            f"{len(comments)} comment(s), {len(tasks)} task(s), "
+            f"{len(verifications)} verification(s), {len(versions)} snapshot version(s)."
+        )
+    finally:
+        asyncio.run(container.shutdown())
 
 
 def app_entry() -> None:

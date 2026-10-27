@@ -1,4 +1,4 @@
-"""Relational SQLite WAL Repository implementing the Section 6 OSINT Data Model."""
+"""Relational SQLite WAL Repository implementing Core + Phase 2 Expansion Data Models."""
 
 import json
 import sqlite3
@@ -15,21 +15,31 @@ from godseye.domain.enums import (
     VerificationStatus,
 )
 from godseye.domain.models import (
+    AIInference,
+    Alert,
+    AlertRule,
     AuditEvent,
     Case,
+    CaseComment,
+    CaseVersion,
     CollectionJob,
     CorrelationFinding,
+    DataConflict,
+    DataQualityScore,
     Entity,
     EntityRelationship,
+    InvestigativeTask,
     NormalizedObservation,
     RawEvidence,
     Target,
+    VerificationRecord,
+    Watchlist,
     WebhookSubscription,
 )
 
 
 class OsintRepository:
-    """Operational source-of-truth repository for Cases, Evidence, Entities, Graph, and Audit."""
+    """Operational source-of-truth repository for Cases, Evidence, Entities, Graph, Watchlists, Collaboration, Quality, AI & Audit."""
 
     def __init__(self, db_path: str = ":memory:") -> None:
         self.db_path = db_path
@@ -189,6 +199,128 @@ class OsintRepository:
                     active INTEGER NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                -- Phase 2 Expansion Tables (expansao-osint-modulos-fontes-apis.md)
+                CREATE TABLE IF NOT EXISTS watchlists (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    entity_id TEXT,
+                    type TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    alert_rules_json TEXT NOT NULL,
+                    frequency TEXT NOT NULL,
+                    channels_json TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    active INTEGER NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_watchlists_case ON watchlists(case_id);
+
+                CREATE TABLE IF NOT EXISTS alerts (
+                    id TEXT PRIMARY KEY,
+                    watchlist_id TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    triggered_at TEXT NOT NULL,
+                    source_id TEXT NOT NULL,
+                    evidence_id TEXT,
+                    severity TEXT NOT NULL,
+                    message TEXT NOT NULL,
+                    acknowledged_by TEXT,
+                    acknowledged_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_alerts_watchlist ON alerts(watchlist_id);
+
+                CREATE TABLE IF NOT EXISTS case_comments (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    entity_id TEXT,
+                    evidence_id TEXT,
+                    author_id TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    mentions_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    edited_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS investigative_tasks (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    assignee_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    due_date TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS verifications (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    entity_id TEXT,
+                    relationship_id TEXT,
+                    status TEXT NOT NULL,
+                    reviewer_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_id TEXT,
+                    reviewed_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS case_versions (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    snapshot_url TEXT NOT NULL,
+                    snapshot_hash TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    change_summary TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS data_quality_scores (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    observation_id TEXT,
+                    relationship_id TEXT,
+                    source_trust REAL NOT NULL,
+                    recency REAL NOT NULL,
+                    corroboration_count INTEGER NOT NULL,
+                    official_source_bonus REAL NOT NULL,
+                    conflict_penalty REAL NOT NULL,
+                    stale_penalty REAL NOT NULL,
+                    final_score REAL NOT NULL,
+                    explanation TEXT NOT NULL,
+                    calculated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS data_conflicts (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    observation_a_id TEXT NOT NULL,
+                    observation_b_id TEXT NOT NULL,
+                    conflict_type TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    resolved_by TEXT,
+                    resolved_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS ai_inferences (
+                    id TEXT PRIMARY KEY,
+                    case_id TEXT NOT NULL,
+                    input_evidence_ids_json TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    prompt_hash TEXT NOT NULL,
+                    task_type TEXT NOT NULL,
+                    output TEXT NOT NULL,
+                    confidence_kind TEXT NOT NULL,
+                    human_review_status TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    reviewed_by TEXT,
+                    reviewed_at TEXT
+                );
                 """
             )
 
@@ -236,13 +368,25 @@ class OsintRepository:
     def delete_case(self, case_id: str) -> bool:
         with self._conn:
             cur = self._conn.execute("DELETE FROM cases WHERE id = ?", (case_id,))
-            self._conn.execute("DELETE FROM targets WHERE case_id = ?", (case_id,))
-            self._conn.execute("DELETE FROM collection_jobs WHERE case_id = ?", (case_id,))
-            self._conn.execute("DELETE FROM raw_evidence WHERE case_id = ?", (case_id,))
-            self._conn.execute("DELETE FROM normalized_observations WHERE case_id = ?", (case_id,))
-            self._conn.execute("DELETE FROM entities WHERE case_id = ?", (case_id,))
-            self._conn.execute("DELETE FROM entity_relationships WHERE case_id = ?", (case_id,))
-            self._conn.execute("DELETE FROM correlation_findings WHERE case_id = ?", (case_id,))
+            for tbl in (
+                "targets",
+                "collection_jobs",
+                "raw_evidence",
+                "normalized_observations",
+                "entities",
+                "entity_relationships",
+                "correlation_findings",
+                "watchlists",
+                "alerts",
+                "case_comments",
+                "investigative_tasks",
+                "verifications",
+                "case_versions",
+                "data_quality_scores",
+                "data_conflicts",
+                "ai_inferences",
+            ):
+                self._conn.execute(f"DELETE FROM {tbl} WHERE case_id = ?", (case_id,))
         return cur.rowcount > 0
 
     @staticmethod
@@ -496,7 +640,7 @@ class OsintRepository:
                 ON CONFLICT(case_id, type, canonical_value) DO UPDATE SET
                     aliases_json = excluded.aliases_json,
                     attributes_json = excluded.attributes_json,
-                    confidence = MAX(entities.confidence, excluded.confidence),
+                    confidence = excluded.confidence,
                     sources_json = excluded.sources_json,
                     last_seen = excluded.last_seen
                 """,
@@ -525,6 +669,11 @@ class OsintRepository:
         row = cur.fetchone()
         return self._row_to_entity(row) if row else None
 
+    def get_entity_by_id(self, entity_id: str) -> Entity | None:
+        cur = self._conn.execute("SELECT * FROM entities WHERE id = ?", (entity_id,))
+        row = cur.fetchone()
+        return self._row_to_entity(row) if row else None
+
     def list_entities(self, case_id: str) -> list[Entity]:
         cur = self._conn.execute(
             "SELECT * FROM entities WHERE case_id = ? ORDER BY first_seen ASC",
@@ -550,7 +699,6 @@ class OsintRepository:
     # --- Entity Relationships ---
     def save_relationship(self, rel: EntityRelationship) -> EntityRelationship:
         with self._conn:
-            # Check if identical edge already exists in case
             cur = self._conn.execute(
                 """
                 SELECT id FROM entity_relationships
@@ -563,7 +711,7 @@ class OsintRepository:
                 self._conn.execute(
                     """
                     UPDATE entity_relationships
-                    SET confidence = MAX(confidence, ?), last_seen = ?
+                    SET confidence = ?, last_seen = ?
                     WHERE id = ?
                     """,
                     (rel.confidence, rel.last_seen, existing["id"]),
@@ -760,6 +908,497 @@ class OsintRepository:
         with self._conn:
             cur = self._conn.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
         return cur.rowcount > 0
+
+    # --- Section 2: Watchlists & Alerts ---
+    def save_watchlist(self, wl: Watchlist) -> Watchlist:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO watchlists (
+                    id, case_id, entity_id, type, value, alert_rules_json,
+                    frequency, channels_json, owner, active, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    alert_rules_json = excluded.alert_rules_json,
+                    frequency = excluded.frequency,
+                    channels_json = excluded.channels_json,
+                    active = excluded.active
+                """,
+                (
+                    wl.id,
+                    wl.case_id,
+                    wl.entity_id,
+                    wl.type.value,
+                    wl.value,
+                    json.dumps([r.model_dump() for r in wl.alert_rules], ensure_ascii=False),
+                    wl.frequency,
+                    json.dumps(wl.channels, ensure_ascii=False),
+                    wl.owner,
+                    1 if wl.active else 0,
+                    wl.created_at,
+                ),
+            )
+        return wl
+
+    def list_watchlists(self, case_id: str | None = None) -> list[Watchlist]:
+        if case_id:
+            cur = self._conn.execute(
+                "SELECT * FROM watchlists WHERE case_id = ? ORDER BY created_at DESC", (case_id,)
+            )
+        else:
+            cur = self._conn.execute("SELECT * FROM watchlists ORDER BY created_at DESC")
+        return [
+            Watchlist(
+                id=r["id"],
+                case_id=r["case_id"],
+                entity_id=r["entity_id"],
+                type=TargetType(r["type"]),
+                value=r["value"],
+                alert_rules=[AlertRule(**item) for item in json.loads(r["alert_rules_json"])],
+                frequency=r["frequency"],
+                channels=json.loads(r["channels_json"]),
+                owner=r["owner"],
+                active=bool(r["active"]),
+                created_at=r["created_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def save_alert(self, alert: Alert) -> Alert:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO alerts (
+                    id, watchlist_id, case_id, triggered_at, source_id,
+                    evidence_id, severity, message, acknowledged_by, acknowledged_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    acknowledged_by = excluded.acknowledged_by,
+                    acknowledged_at = excluded.acknowledged_at
+                """,
+                (
+                    alert.id,
+                    alert.watchlist_id,
+                    alert.case_id,
+                    alert.triggered_at,
+                    alert.source_id,
+                    alert.evidence_id,
+                    alert.severity.value,
+                    alert.message,
+                    alert.acknowledged_by,
+                    alert.acknowledged_at,
+                ),
+            )
+        return alert
+
+    def get_alert(self, alert_id: str) -> Alert | None:
+        cur = self._conn.execute("SELECT * FROM alerts WHERE id = ?", (alert_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return Alert(
+            id=r["id"],
+            watchlist_id=r["watchlist_id"],
+            case_id=r["case_id"],
+            triggered_at=r["triggered_at"],
+            source_id=r["source_id"],
+            evidence_id=r["evidence_id"],
+            severity=RiskLevel(r["severity"]),
+            message=r["message"],
+            acknowledged_by=r["acknowledged_by"],
+            acknowledged_at=r["acknowledged_at"],
+        )
+
+    def list_alerts(self, case_id: str | None = None, watchlist_id: str | None = None) -> list[Alert]:
+        if watchlist_id:
+            cur = self._conn.execute(
+                "SELECT * FROM alerts WHERE watchlist_id = ? ORDER BY triggered_at DESC",
+                (watchlist_id,),
+            )
+        elif case_id:
+            cur = self._conn.execute(
+                "SELECT * FROM alerts WHERE case_id = ? ORDER BY triggered_at DESC",
+                (case_id,),
+            )
+        else:
+            cur = self._conn.execute("SELECT * FROM alerts ORDER BY triggered_at DESC")
+        return [
+            Alert(
+                id=r["id"],
+                watchlist_id=r["watchlist_id"],
+                case_id=r["case_id"],
+                triggered_at=r["triggered_at"],
+                source_id=r["source_id"],
+                evidence_id=r["evidence_id"],
+                severity=RiskLevel(r["severity"]),
+                message=r["message"],
+                acknowledged_by=r["acknowledged_by"],
+                acknowledged_at=r["acknowledged_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    # --- Section 7: Investigative Collaboration ---
+    def save_comment(self, comment: CaseComment) -> CaseComment:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO case_comments (
+                    id, case_id, entity_id, evidence_id, author_id,
+                    body, mentions_json, created_at, edited_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    comment.id,
+                    comment.case_id,
+                    comment.entity_id,
+                    comment.evidence_id,
+                    comment.author_id,
+                    comment.body,
+                    json.dumps(comment.mentions, ensure_ascii=False),
+                    comment.created_at,
+                    comment.edited_at,
+                ),
+            )
+        return comment
+
+    def list_comments(self, case_id: str) -> list[CaseComment]:
+        cur = self._conn.execute(
+            "SELECT * FROM case_comments WHERE case_id = ? ORDER BY created_at ASC", (case_id,)
+        )
+        return [
+            CaseComment(
+                id=r["id"],
+                case_id=r["case_id"],
+                entity_id=r["entity_id"],
+                evidence_id=r["evidence_id"],
+                author_id=r["author_id"],
+                body=r["body"],
+                mentions=json.loads(r["mentions_json"]),
+                created_at=r["created_at"],
+                edited_at=r["edited_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def save_task(self, task: InvestigativeTask) -> InvestigativeTask:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO investigative_tasks (
+                    id, case_id, title, description, assignee_id,
+                    status, due_date, created_by, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    assignee_id = excluded.assignee_id
+                """,
+                (
+                    task.id,
+                    task.case_id,
+                    task.title,
+                    task.description,
+                    task.assignee_id,
+                    task.status,
+                    task.due_date,
+                    task.created_by,
+                    task.created_at,
+                ),
+            )
+        return task
+
+    def list_tasks(self, case_id: str) -> list[InvestigativeTask]:
+        cur = self._conn.execute(
+            "SELECT * FROM investigative_tasks WHERE case_id = ? ORDER BY created_at ASC",
+            (case_id,),
+        )
+        return [
+            InvestigativeTask(
+                id=r["id"],
+                case_id=r["case_id"],
+                title=r["title"],
+                description=r["description"],
+                assignee_id=r["assignee_id"],
+                status=r["status"],
+                due_date=r["due_date"],
+                created_by=r["created_by"],
+                created_at=r["created_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def save_verification(self, ver: VerificationRecord) -> VerificationRecord:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO verifications (
+                    id, case_id, entity_id, relationship_id, status,
+                    reviewer_id, reason, evidence_id, reviewed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ver.id,
+                    ver.case_id,
+                    ver.entity_id,
+                    ver.relationship_id,
+                    ver.status.value,
+                    ver.reviewer_id,
+                    ver.reason,
+                    ver.evidence_id,
+                    ver.reviewed_at,
+                ),
+            )
+        return ver
+
+    def list_verifications(self, case_id: str) -> list[VerificationRecord]:
+        cur = self._conn.execute(
+            "SELECT * FROM verifications WHERE case_id = ? ORDER BY reviewed_at DESC",
+            (case_id,),
+        )
+        return [
+            VerificationRecord(
+                id=r["id"],
+                case_id=r["case_id"],
+                entity_id=r["entity_id"],
+                relationship_id=r["relationship_id"],
+                status=VerificationStatus(r["status"]),
+                reviewer_id=r["reviewer_id"],
+                reason=r["reason"],
+                evidence_id=r["evidence_id"],
+                reviewed_at=r["reviewed_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def save_case_version(self, cv: CaseVersion) -> CaseVersion:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO case_versions (
+                    id, case_id, version, snapshot_url, snapshot_hash,
+                    created_by, created_at, change_summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cv.id,
+                    cv.case_id,
+                    cv.version,
+                    cv.snapshot_url,
+                    cv.snapshot_hash,
+                    cv.created_by,
+                    cv.created_at,
+                    cv.change_summary,
+                ),
+            )
+        return cv
+
+    def list_case_versions(self, case_id: str) -> list[CaseVersion]:
+        cur = self._conn.execute(
+            "SELECT * FROM case_versions WHERE case_id = ? ORDER BY version ASC",
+            (case_id,),
+        )
+        return [
+            CaseVersion(
+                id=r["id"],
+                case_id=r["case_id"],
+                version=int(r["version"]),
+                snapshot_url=r["snapshot_url"],
+                snapshot_hash=r["snapshot_hash"],
+                created_by=r["created_by"],
+                created_at=r["created_at"],
+                change_summary=r["change_summary"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    # --- Section 8: Data Quality & Governance ---
+    def save_quality_score(self, qs: DataQualityScore) -> DataQualityScore:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO data_quality_scores (
+                    id, case_id, observation_id, relationship_id, source_trust,
+                    recency, corroboration_count, official_source_bonus,
+                    conflict_penalty, stale_penalty, final_score, explanation, calculated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    qs.id,
+                    qs.case_id,
+                    qs.observation_id,
+                    qs.relationship_id,
+                    qs.source_trust,
+                    qs.recency,
+                    qs.corroboration_count,
+                    qs.official_source_bonus,
+                    qs.conflict_penalty,
+                    qs.stale_penalty,
+                    qs.final_score,
+                    qs.explanation,
+                    qs.calculated_at,
+                ),
+            )
+        return qs
+
+    def list_quality_scores(self, case_id: str) -> list[DataQualityScore]:
+        cur = self._conn.execute(
+            "SELECT * FROM data_quality_scores WHERE case_id = ? ORDER BY calculated_at DESC",
+            (case_id,),
+        )
+        return [
+            DataQualityScore(
+                id=r["id"],
+                case_id=r["case_id"],
+                observation_id=r["observation_id"],
+                relationship_id=r["relationship_id"],
+                source_trust=float(r["source_trust"]),
+                recency=float(r["recency"]),
+                corroboration_count=int(r["corroboration_count"]),
+                official_source_bonus=float(r["official_source_bonus"]),
+                conflict_penalty=float(r["conflict_penalty"]),
+                stale_penalty=float(r["stale_penalty"]),
+                final_score=float(r["final_score"]),
+                explanation=r["explanation"],
+                calculated_at=r["calculated_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    def save_conflict(self, conflict: DataConflict) -> DataConflict:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO data_conflicts (
+                    id, case_id, entity_id, observation_a_id, observation_b_id,
+                    conflict_type, description, status, resolved_by, resolved_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status = excluded.status,
+                    resolved_by = excluded.resolved_by,
+                    resolved_at = excluded.resolved_at
+                """,
+                (
+                    conflict.id,
+                    conflict.case_id,
+                    conflict.entity_id,
+                    conflict.observation_a_id,
+                    conflict.observation_b_id,
+                    conflict.conflict_type,
+                    conflict.description,
+                    conflict.status,
+                    conflict.resolved_by,
+                    conflict.resolved_at,
+                ),
+            )
+        return conflict
+
+    def list_conflicts(self, case_id: str) -> list[DataConflict]:
+        cur = self._conn.execute(
+            "SELECT * FROM data_conflicts WHERE case_id = ? ORDER BY id ASC",
+            (case_id,),
+        )
+        return [
+            DataConflict(
+                id=r["id"],
+                case_id=r["case_id"],
+                entity_id=r["entity_id"],
+                observation_a_id=r["observation_a_id"],
+                observation_b_id=r["observation_b_id"],
+                conflict_type=r["conflict_type"],
+                description=r["description"],
+                status=r["status"],
+                resolved_by=r["resolved_by"],
+                resolved_at=r["resolved_at"],
+            )
+            for r in cur.fetchall()
+        ]
+
+    # --- Section 9: Assistive AI ---
+    def save_ai_inference(self, inf: AIInference) -> AIInference:
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO ai_inferences (
+                    id, case_id, input_evidence_ids_json, model, model_version,
+                    prompt_hash, task_type, output, confidence_kind,
+                    human_review_status, created_at, reviewed_by, reviewed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    human_review_status = excluded.human_review_status,
+                    reviewed_by = excluded.reviewed_by,
+                    reviewed_at = excluded.reviewed_at
+                """,
+                (
+                    inf.id,
+                    inf.case_id,
+                    json.dumps(inf.input_evidence_ids),
+                    inf.model,
+                    inf.model_version,
+                    inf.prompt_hash,
+                    inf.task_type,
+                    inf.output,
+                    inf.confidence_kind,
+                    inf.human_review_status,
+                    inf.created_at,
+                    inf.reviewed_by,
+                    inf.reviewed_at,
+                ),
+            )
+        return inf
+
+    def get_ai_inference(self, inference_id: str) -> AIInference | None:
+        cur = self._conn.execute("SELECT * FROM ai_inferences WHERE id = ?", (inference_id,))
+        r = cur.fetchone()
+        if not r:
+            return None
+        return AIInference(
+            id=r["id"],
+            case_id=r["case_id"],
+            input_evidence_ids=json.loads(r["input_evidence_ids_json"]),
+            model=r["model"],
+            model_version=r["model_version"],
+            prompt_hash=r["prompt_hash"],
+            task_type=r["task_type"],
+            output=r["output"],
+            confidence_kind=r["confidence_kind"],
+            human_review_status=r["human_review_status"],
+            created_at=r["created_at"],
+            reviewed_by=r["reviewed_by"],
+            reviewed_at=r["reviewed_at"],
+        )
+
+    def list_ai_inferences(self, case_id: str) -> list[AIInference]:
+        cur = self._conn.execute(
+            "SELECT * FROM ai_inferences WHERE case_id = ? ORDER BY created_at DESC",
+            (case_id,),
+        )
+        return [
+            AIInference(
+                id=r["id"],
+                case_id=r["case_id"],
+                input_evidence_ids=json.loads(r["input_evidence_ids_json"]),
+                model=r["model"],
+                model_version=r["model_version"],
+                prompt_hash=r["prompt_hash"],
+                task_type=r["task_type"],
+                output=r["output"],
+                confidence_kind=r["confidence_kind"],
+                human_review_status=r["human_review_status"],
+                created_at=r["created_at"],
+                reviewed_by=r["reviewed_by"],
+                reviewed_at=r["reviewed_at"],
+            )
+            for r in cur.fetchall()
+        ]
 
     def close(self) -> None:
         self._conn.close()

@@ -1,4 +1,6 @@
-"""Collector Registry managing the 100+ OSINT source catalog and active adapters."""
+"""Collector Registry managing the 135+ OSINT source catalog, OSINT Brazuca importer & active adapters."""
+
+from typing import Any
 
 from godseye.collectors.base import BaseCollector
 from godseye.collectors.brazil_sources import (
@@ -9,6 +11,13 @@ from godseye.collectors.brazil_sources import (
     QueridoDiarioCollector,
 )
 from godseye.collectors.catalog import build_full_catalog
+from godseye.collectors.expansion_sources import (
+    BrazucaCatalogImporter,
+    CryptoOsintCollector,
+    HudsonRockCollector,
+    ImageExifMediaCollector,
+    PhoneOsintCollector,
+)
 from godseye.collectors.global_sources import (
     CrtShCollector,
     DnsDohCollector,
@@ -25,12 +34,12 @@ from godseye.collectors.global_sources import (
 )
 from godseye.core.cache import MultiTierCache
 from godseye.core.resilience import ResilientHttpClient
-from godseye.domain.enums import TargetType
-from godseye.domain.models import SourceMetadata
+from godseye.domain.enums import SourceReviewStatus, TargetType
+from godseye.domain.models import SourceMetadata, utc_now_iso
 
 
 class CollectorRegistry:
-    """Central catalog and registry of OSINT sources and live adapters (Section 4)."""
+    """Central catalog and registry of OSINT sources and live adapters (Section 4 & Exp Section 4)."""
 
     def __init__(
         self,
@@ -66,6 +75,10 @@ class CollectorRegistry:
             QueridoDiarioCollector,
             PortalTransparenciaSanctionsCollector,
             DataJudCnjCollector,
+            PhoneOsintCollector,
+            CryptoOsintCollector,
+            HudsonRockCollector,
+            ImageExifMediaCollector,
         ]
         for cls in adapter_classes:
             instance = cls(
@@ -96,6 +109,7 @@ class CollectorRegistry:
         region: str | None = None,
         category: str | None = None,
         live_only: bool = False,
+        status_filter: str | None = None,
     ) -> list[SourceMetadata]:
         """List cataloged OSINT sources with optional filtering."""
         items = list(self._catalog.values())
@@ -105,6 +119,8 @@ class CollectorRegistry:
             items = [s for s in items if category.lower() in s.category.lower()]
         if live_only:
             items = [s for s in items if s.has_live_adapter]
+        if status_filter:
+            items = [s for s in items if s.status.value.lower() == status_filter.lower()]
         return items
 
     def get_source_metadata(self, source_id: str) -> SourceMetadata | None:
@@ -116,4 +132,22 @@ class CollectorRegistry:
         meta = self._catalog.get(source_id)
         if meta is not None:
             meta.enabled = enabled
+        return meta
+
+    def import_brazuca_catalog(
+        self, custom_entries: list[dict[str, Any]] | None = None
+    ) -> list[SourceMetadata]:
+        """Import dynamic Brazilian sources (OSINT Brazuca) as CANDIDATE sources until human review (Section 4.3)."""
+        imported = BrazucaCatalogImporter.parse_entries(custom_entries)
+        for src in imported:
+            self._catalog[src.id] = src
+        return imported
+
+    def approve_candidate_source(self, source_id: str) -> SourceMetadata | None:
+        """Approve a CANDIDATE source after human review and mark it ACTIVE & enabled."""
+        meta = self._catalog.get(source_id)
+        if meta is not None:
+            meta.status = SourceReviewStatus.ACTIVE
+            meta.enabled = True
+            meta.last_reviewed_at = utc_now_iso()
         return meta
