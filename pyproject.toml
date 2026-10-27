@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "godseye"
+version = "1.0.0"
+description = "God's Eye (𓂀) - Enterprise OSINT Aggregation, Correlation & Threat Intelligence Platform (Global + Brazil)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    { name = "God's Eye Cybersecurity Team" }
+]
+keywords = ["osint", "cybersecurity", "threat-intelligence", "reconnaissance", "brasil", "fastapi", "cli"]
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.2.0",
+    "rich>=13.7.0",
+    "typer>=0.12.0",
+    "truststore>=0.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+godseye = "godseye.cli.main:app_entry"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["godseye*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM"]
+ignore = ["E501", "B008"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = false
+warn_unused_configs = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

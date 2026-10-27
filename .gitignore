@@ -1,0 +1,24 @@
+# Virtual environments & local skills cache
+.venv/
+venv/
+ENV/
+.agent/
+
+# Python bytecode & caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local SQLite databases & environment secrets
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+!.env.example
