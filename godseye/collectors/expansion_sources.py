@@ -382,6 +382,109 @@ class ImageExifMediaCollector(BaseCollector):
         )
 
 
+class UsernameSocmintCollector(BaseCollector):
+    """Multi-Platform Username / SOCMINT Enumeration across public APIs (Sherlock/Maigret style, Section 5.4)."""
+
+    id = "socmint_username_matrix"
+    name = "SOCMINT Multi-Platform Username Matrix (GitHub, GitLab, Reddit, HN, Dev.to, DockerHub, Chess.com...)"
+    accepts = {TargetType.USERNAME}
+    produces = {EntityType.ACCOUNT, EntityType.PERSON}
+    trust_level = TrustLevel.MEDIUM
+    requires_auth = False
+    rate_limit = 60
+    region = "global"
+
+    PLATFORMS: tuple[tuple[str, str, str], ...] = (
+        ("GitHub", "https://api.github.com/users/{u}", "https://github.com/{u}"),
+        ("GitLab", "https://gitlab.com/api/v4/users?username={u}", "https://gitlab.com/{u}"),
+        ("Reddit", "https://www.reddit.com/user/{u}/about.json", "https://www.reddit.com/user/{u}"),
+        ("HackerNews", "https://hacker-news.firebaseio.com/v0/user/{u}.json", "https://news.ycombinator.com/user?id={u}"),
+        ("Dev.to", "https://dev.to/api/users/by_username?url={u}", "https://dev.to/{u}"),
+        ("DockerHub", "https://hub.docker.com/v2/users/{u}/", "https://hub.docker.com/u/{u}"),
+        ("Chess.com", "https://api.chess.com/pub/player/{u}", "https://www.chess.com/member/{u}"),
+        ("Keybase", "https://keybase.io/_/api/1.0/user/lookup.json?usernames={u}", "https://keybase.io/{u}"),
+    )
+
+    async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
+        import asyncio
+
+        handle = target.normalized_value.strip().lstrip("@")
+
+        async def _probe_platform(platform_name: str, api_tpl: str, profile_tpl: str) -> RawObservation | None:
+            api_url = api_tpl.format(u=handle)
+            profile_url = profile_tpl.format(u=handle)
+            try:
+                resp = await self.http_client.fetch_with_retry(self.id, api_url, max_retries=0)
+                data = resp.json()
+                if data is None:
+                    return None
+                if platform_name == "GitLab" and (not isinstance(data, list) or len(data) == 0):
+                    return None
+                if platform_name == "Keybase":
+                    them = data.get("them") if isinstance(data, dict) else None
+                    if not them or not isinstance(them, list) or them[0] is None:
+                        return None
+                if platform_name == "Reddit" and isinstance(data, dict) and data.get("error"):
+                    return None
+
+                summary_info: dict[str, Any] = {
+                    "platform": platform_name,
+                    "username": handle,
+                    "profile_url": profile_url,
+                }
+                if isinstance(data, dict):
+                    for k in ("name", "bio", "company", "location", "created_at", "karma", "title"):
+                        if data.get(k):
+                            summary_info[k] = data[k]
+                elif isinstance(data, list) and data and isinstance(data[0], dict):
+                    summary_info["name"] = data[0].get("name")
+                    summary_info["state"] = data[0].get("state")
+
+                return self.make_observation(
+                    entity_type=EntityType.ACCOUNT,
+                    entity_value=f"{platform_name}:{handle} ({profile_url})",
+                    raw_payload=summary_info,
+                    source_url=profile_url,
+                    confidence=0.78,
+                    verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                    related_to_value=handle,
+                    related_to_type=EntityType.ACCOUNT,
+                    relation=RelationType.ASSOCIATED_WITH,
+                    tags=["socmint", "username-search", platform_name.lower()],
+                )
+            except Exception:
+                return None
+
+        results = await asyncio.gather(
+            *(_probe_platform(p_name, a_url, pr_url) for p_name, a_url, pr_url in self.PLATFORMS),
+            return_exceptions=True,
+        )
+        emitted = 0
+        for res in results:
+            if isinstance(res, RawObservation):
+                emitted += 1
+                yield res
+
+        if emitted == 0 and self.offline_fallback:
+            yield self.make_observation(
+                entity_type=EntityType.ACCOUNT,
+                entity_value=f"SOCMINT Lead:{handle} (https://github.com/{handle})",
+                raw_payload={
+                    "platform": "SOCMINT-Matrix",
+                    "username": handle,
+                    "profile_url": f"https://github.com/{handle}",
+                    "_fallback": True,
+                },
+                source_url=f"https://github.com/{handle}",
+                confidence=0.70,
+                verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                related_to_value=handle,
+                related_to_type=EntityType.ACCOUNT,
+                relation=RelationType.ASSOCIATED_WITH,
+                tags=["socmint", "username-search"],
+            )
+
+
 # --- Section 4: OSINT Brazuca Dynamic Catalog Importer ---
 
 CURATED_OSINT_BRAZUCA_ENTRIES: list[dict[str, Any]] = [

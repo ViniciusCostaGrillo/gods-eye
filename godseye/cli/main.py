@@ -53,6 +53,11 @@ def _display_quick_help() -> None:
         "godseye scan +5511999998888",
     )
     table.add_row(
+        "godseye username <handle>",
+        "Search a username across multiple social & developer networks (SOCMINT Matrix)",
+        "godseye username torvalds",
+    )
+    table.add_row(
         "godseye watchlist",
         "Manage continuous OSINT watchlists & alert rules (13 monitored event types)",
         "godseye watchlist --create 'VIP Domains' --targets example.com",
@@ -954,6 +959,27 @@ def cmd_menu() -> None:
     """Open the interactive Zero-Config OSINT Menu."""
     render_banner(console)
     _run_interactive_menu()
+
+
+@app.command("username")
+def cmd_username(
+    handle: str = typer.Argument(..., help="Username / handle to search across networks (e.g. torvalds)"),
+    output: str | None = typer.Option(None, "--output", "-o", help="Optional path to export dossier (.md, .json, .csv)"),
+    export_format: str = typer.Option("md", "--format", "-f", help="Export format: md, json, csv"),
+) -> None:
+    """Search a username across multiple social & developer networks (GitHub, GitLab, Reddit, HN, Dev.to, DockerHub, Keybase, Chess.com)."""
+    clean_handle = handle.strip().lstrip("@")
+    cmd_scan(
+        target_value=clean_handle,
+        case_title=f"SOCMINT Username Hunt: @{clean_handle}",
+        target_type="username",
+        depth=1,
+        sources=None,
+        output=output,
+        export_format=export_format,
+        legal_basis=LegalBasis.CYBERSECURITY_DEFENSE,
+        no_banner=False,
+    )
 
 
 def app_entry() -> None:
