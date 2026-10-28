@@ -59,6 +59,7 @@ class Target(BaseModel):
     value: str
     normalized_value: str
     risk: RiskLevel = Field(default=RiskLevel.INFO)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     first_seen: str = Field(default_factory=utc_now_iso)
     last_seen: str = Field(default_factory=utc_now_iso)
 

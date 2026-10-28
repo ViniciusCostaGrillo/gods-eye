@@ -74,6 +74,7 @@ class OsintRepository:
                     value TEXT NOT NULL,
                     normalized_value TEXT NOT NULL,
                     risk TEXT NOT NULL,
+                    metadata_json TEXT DEFAULT '{}',
                     first_seen TEXT NOT NULL,
                     last_seen TEXT NOT NULL
                 );
@@ -408,10 +409,11 @@ class OsintRepository:
         with self._conn:
             self._conn.execute(
                 """
-                INSERT INTO targets (id, case_id, type, value, normalized_value, risk, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO targets (id, case_id, type, value, normalized_value, risk, metadata_json, first_seen, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     risk = excluded.risk,
+                    metadata_json = excluded.metadata_json,
                     last_seen = excluded.last_seen
                 """,
                 (
@@ -421,6 +423,7 @@ class OsintRepository:
                     target.value,
                     target.normalized_value,
                     target.risk.value,
+                    json.dumps(target.metadata or {}),
                     target.first_seen,
                     target.last_seen,
                 ),
@@ -440,6 +443,11 @@ class OsintRepository:
 
     @staticmethod
     def _row_to_target(row: sqlite3.Row) -> Target:
+        meta_raw = row["metadata_json"] if "metadata_json" in row.keys() else "{}"
+        try:
+            meta = json.loads(meta_raw) if meta_raw else {}
+        except Exception:
+            meta = {}
         return Target(
             id=row["id"],
             case_id=row["case_id"],
@@ -447,6 +455,7 @@ class OsintRepository:
             value=row["value"],
             normalized_value=row["normalized_value"],
             risk=RiskLevel(row["risk"]),
+            metadata=meta,
             first_seen=row["first_seen"],
             last_seen=row["last_seen"],
         )

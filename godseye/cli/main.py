@@ -285,14 +285,18 @@ def _render_scan_report(
     organizations: list[dict[str, Any]] = []
     breaches: list[dict[str, Any]] = []
     documents: list[dict[str, Any]] = []
+    lawsuits: list[dict[str, Any]] = []
     network_hosts: list[dict[str, Any]] = []
     cryptos: list[dict[str, Any]] = []
 
     seen_vals: set[str] = set()
     for ev in all_evidence:
         payload = ev.raw_payload or {}
+        # Ignore synthetic fallback records from CLI display
+        if payload.get("_fallback") and not payload.get("razao_social"):
+            continue
         val = str(ev.url or payload.get("profile_url") or payload.get("cpf_formatted") or payload.get("target") or ev.source_id)
-        dedup_key = f"{ev.source_id}:{val}:{payload.get('is_cpf_analysis', False)}"
+        dedup_key = f"{ev.source_id}:{val}:{payload.get('is_cpf_analysis', False)}:{payload.get('processo_formatado', '')}"
         if dedup_key in seen_vals:
             continue
         seen_vals.add(dedup_key)
@@ -300,9 +304,13 @@ def _render_scan_report(
         if ev.source_id == "brasil_cpf":
             if payload.get("is_cpf_analysis"):
                 cpf_analyses.append(payload)
+        elif ev.source_id == "datajud_cnj" or payload.get("processo_formatado"):
+            lawsuits.append(payload)
         elif ev.source_id in {"github_osint", "socmint_username_matrix", "person_and_leak_osint", "keybase", "gravatar"}:
             if payload.get("source") == "XposedOrNot" or "Name" in payload:
                 breaches.append(payload)
+            elif payload.get("discovered_process"):
+                lawsuits.append(payload)
             elif "title" in payload and "language" in payload:
                 documents.append(payload)
             elif "email" in payload and payload.get("source") == "github_public_commits":
@@ -312,15 +320,92 @@ def _render_scan_report(
         elif ev.source_id in {"phone_osint", "brasil_cep", "ip_api"}:
             locations.append(payload)
         elif ev.source_id in {"brasil_cnpj", "portal_transparencia"}:
-            organizations.append(payload)
+            # Filter out generic compliance dummy checks
+            if "Sem restrições ativas detectadas" not in str(payload.get("status", "")):
+                organizations.append(payload)
         elif ev.source_id in {"hibp", "hudsonrock"}:
             breaches.append(payload)
-        elif ev.source_id in {"querido_diario", "datajud_cnj"}:
+        elif ev.source_id == "querido_diario":
             documents.append(payload)
         elif ev.source_id in {"shodan_internetdb", "dns_doh", "crtsh", "rdap"}:
             network_hosts.append(payload)
         elif ev.source_id in {"crypto_osint"}:
             cryptos.append(payload)
+
+    # =========================================================================
+    # 2.5 NOVO PAINEL: FICHA CONSOLIDADA DO ALVO (RESUMO EXECUTIVO)
+    # =========================================================================
+    consolidated_names: list[str] = []
+    consolidated_docs: list[str] = []
+    consolidated_addrs: list[str] = []
+    consolidated_phones: list[str] = []
+
+    for c_data in cpf_analyses:
+        for n in c_data.get("discovered_names", []):
+            if n not in consolidated_names:
+                consolidated_names.append(n)
+        for s in c_data.get("servidor_records", []):
+            if s.get("nome") and s["nome"] not in consolidated_names:
+                consolidated_names.append(s["nome"])
+        cpf_fmt = c_data.get("cpf_formatted")
+        if cpf_fmt and cpf_fmt not in consolidated_docs:
+            consolidated_docs.append(f"CPF {cpf_fmt}")
+
+    for org in organizations:
+        r_soc = org.get("razao_social")
+        cnpj_num = org.get("cnpj")
+        if r_soc and r_soc not in consolidated_names and not any(t.type == TargetType.PERSON for t in [target]):
+            consolidated_names.append(r_soc)
+        if cnpj_num and f"CNPJ {cnpj_num}" not in consolidated_docs:
+            consolidated_docs.append(f"CNPJ {cnpj_num}")
+        if org.get("endereco_completo"):
+            if org["endereco_completo"] not in consolidated_addrs:
+                consolidated_addrs.append(org["endereco_completo"])
+        for p in org.get("telefones", []):
+            if p and p not in consolidated_phones:
+                consolidated_phones.append(p)
+
+    for loc in locations:
+        addr_str = loc.get("endereco_completo") or loc.get("city")
+        if addr_str and addr_str not in consolidated_addrs:
+            consolidated_addrs.append(addr_str)
+        if loc.get("e164") and loc["e164"] not in consolidated_phones and not loc["e164"].startswith("CPF"):
+            consolidated_phones.append(loc["e164"])
+
+    f_lines: list[Text] = []
+    titular_line = Text("● Titular / Identidade: ", style="bold bright_cyan")
+    titular_line.append(", ".join(consolidated_names[:2]) or target.normalized_value, style="bold bright_white")
+    f_lines.append(titular_line)
+
+    if consolidated_docs:
+        doc_line = Text("● Documento(s): ", style="bold bright_cyan")
+        doc_line.append("  •  ".join(consolidated_docs[:3]), style="bold gold1")
+        f_lines.append(doc_line)
+
+    if consolidated_addrs:
+        addr_line = Text("● Endereço(s) Confirmado(s): ", style="bold bright_cyan")
+        addr_line.append(consolidated_addrs[0], style="white")
+        f_lines.append(addr_line)
+
+    if consolidated_phones:
+        phone_line = Text("● Contato(s) Localizado(s): ", style="bold bright_cyan")
+        phone_line.append(", ".join(consolidated_phones[:4]), style="green")
+        f_lines.append(phone_line)
+
+    summary_metric = Text("● Vínculos Identificados: ", style="bold bright_cyan")
+    summary_metric.append(
+        f"{len(organizations)} Empresa(s)  •  {len(lawsuits)} Processo(s) Judicial(is)  •  {len(accounts)} Perfil(is) Digital(is)  •  {len(breaches)} Vazamento(s)",
+        style="bold white",
+    )
+    f_lines.append(summary_metric)
+
+    ficha_panel = Panel(
+        Text("\n").join(f_lines),
+        title=f"[bold gold1]{EYE_OF_HORUS_GLYPH} FICHA CONSOLIDADA DO ALVO (RESUMO EXECUTIVO)[/bold gold1]",
+        border_style="bright_cyan",
+        padding=(1, 2),
+    )
+    console.print(ficha_panel)
 
     # --- Render Section: Análise de CPF & Registros Públicos (Brasil) ---
     if cpf_analyses:
@@ -474,10 +559,28 @@ def _render_scan_report(
                 console.print(f"        Cidades atendidas: {', '.join(cities[:5])}", overflow="fold")
         console.print()
 
+    # --- Render Section: Processos Judiciais & Tribunais (DataJud / CNJ) ---
+    if lawsuits:
+        console.print(
+            f"[bold gold1]{EYE_OF_HORUS_GLYPH} PROCESSOS JUDICIAIS & TRIBUNAIS (CNJ / DATAJUD) ({len(lawsuits)})[/bold gold1]"
+        )
+        console.rule(style="dim cyan")
+        for lw in lawsuits:
+            proc_num = lw.get("processo_formatado") or lw.get("discovered_process") or lw.get("referencia") or "Processo"
+            trib = lw.get("tribunal") or "Tribunal"
+            snippet = lw.get("trecho") or lw.get("resumo") or lw.get("classe") or ""
+            link_url = lw.get("url_comunica_pje") or lw.get("url") or ""
+            console.print(f"  ● [bold cyan]{proc_num}[/bold cyan]  •  [bold white]{trib}[/bold white]", overflow="fold")
+            if link_url:
+                console.print(f"      ↳ [bright_blue underline]{link_url}[/bright_blue underline]", overflow="fold")
+            if snippet:
+                console.print(f"        [dim]{snippet}[/dim]", overflow="fold")
+        console.print()
+
     # --- Render Section: Dados Cadastrais & Quadro Societário (QSA) ---
     if organizations:
         console.print(
-            f"[bold gold1]{EYE_OF_HORUS_GLYPH} DADOS CADASTRAIS & QUADRO SOCIETÁRIO (QSA) ({len(organizations)})[/bold gold1]"
+            f"[bold gold1]{EYE_OF_HORUS_GLYPH} EMPRESAS & QUADRO SOCIETÁRIO (QSA / RECEITA FEDERAL) ({len(organizations)})[/bold gold1]"
         )
         console.rule(style="dim cyan")
         for org in organizations:
@@ -485,13 +588,27 @@ def _render_scan_report(
             razao = org.get("razao_social") or "-"
             sit = org.get("situacao_cadastral") or "ATIVA"
             cnae = org.get("cnae_principal") or "-"
+            addr = org.get("endereco_completo") or ""
+            phones = org.get("telefones") or []
+            email_c = org.get("email") or ""
+
             console.print(
                 f"  ● [bold white]{razao}[/bold white]  [dim](CNPJ: {cnpj})[/dim]  •  Situação: [bold green]{sit}[/bold green]",
                 overflow="fold",
             )
             if cnae and cnae != "-":
                 console.print(f"        CNAE: {cnae}", overflow="fold")
-            for s in org.get("qsa", [])[:6]:
+            if addr:
+                console.print(f"        [bold green]Endereço Completo:[/bold green] {addr}", overflow="fold")
+            contact_bits = []
+            if phones:
+                contact_bits.append(f"Telefone: {', '.join(phones)}")
+            if email_c:
+                contact_bits.append(f"E-mail: {email_c}")
+            if contact_bits:
+                console.print(f"        Contatos: {'  •  '.join(contact_bits)}", overflow="fold")
+
+            for s in org.get("qsa", [])[:8]:
                 if isinstance(s, dict) and s.get("nome_socio"):
                     nome = s.get("nome_socio")
                     qual = s.get("qualificacao_socio") or "Sócio"
@@ -609,6 +726,68 @@ def _render_scan_report(
         console.print(Panel(tree, border_style="cyan", padding=(0, 2)))
 
 
+def _get_post_scan_actions(case_id: str, container: AppContainer) -> dict[str, Any]:
+    """Inspect discovered case entities and evidence to offer instant pivoting actions."""
+    all_evidence = container.repo.list_evidence(case_id)
+    cnpjs: list[str] = []
+    procs: list[str] = []
+    urls: list[str] = []
+
+    for ev in all_evidence:
+        payload = ev.raw_payload or {}
+        c = payload.get("discovered_cnpj") or payload.get("cnpj")
+        if c and c not in cnpjs:
+            cnpjs.append(c)
+        p = payload.get("discovered_process") or payload.get("processo_formatado")
+        if p and p not in procs:
+            procs.append(p)
+        u = payload.get("url_comunica_pje") or payload.get("url")
+        if u and u.startswith("http") and u not in urls:
+            urls.append(u)
+
+    return {
+        "discovered_cnpjs": cnpjs[:5],
+        "discovered_processes": procs[:5],
+        "process_urls": urls[:5],
+        "html_dossier_available": True,
+    }
+
+
+def _render_post_scan_interactive_menu(case_id: str, container: AppContainer) -> None:
+    """Offer 1-key quick pivoting options in terminal."""
+    actions = _get_post_scan_actions(case_id, container)
+    cnpjs = actions["discovered_cnpjs"]
+    urls = actions["process_urls"]
+
+    menu_lines: list[str] = []
+    idx = 1
+    action_map: dict[str, tuple[str, str]] = {}
+
+    for c in cnpjs[:3]:
+        menu_lines.append(f"  [bold bright_cyan][{idx}][/bold bright_cyan] Investigar CNPJ descoberto: [bold white]{c}[/bold white]")
+        action_map[str(idx)] = ("scan_cnpj", c)
+        idx += 1
+
+    if urls:
+        menu_lines.append(f"  [bold bright_cyan][P][/bold bright_cyan] Abrir link(s) de processos judiciais no navegador ({len(urls)} link(s))")
+        action_map["p"] = ("open_urls", "")
+
+    menu_lines.append(f"  [bold bright_cyan][H][/bold bright_cyan] Exportar Dossiê Executivo em HTML Interativo")
+    action_map["h"] = ("export_html", "")
+
+    if not menu_lines:
+        return
+
+    menu_panel = Panel(
+        Text("\n").join(Text.from_markup(line) for line in menu_lines),
+        title=f"[bold gold1]{EYE_OF_HORUS_GLYPH} AÇÕES RÁPIDAS PÓS-INVESTIGAÇÃO[/bold gold1]",
+        subtitle="[dim]Digite o número/letra correspondente ou pressione Enter para concluir[/dim]",
+        border_style="gold1",
+        padding=(0, 2),
+    )
+    console.print(menu_panel)
+
+
 @app.callback(invoke_without_command=True)
 def main_callback(
     ctx: typer.Context,
@@ -640,17 +819,23 @@ def cmd_scan(
         "", "--case", "-c", help="Título do caso (criado automaticamente se omitido)"
     ),
     target_type: str | None = typer.Option(
-        None, "--type", "-t", help="Tipo explícito (email, domain, ip, cnpj, cep, username, phone, crypto, person)"
+        None, "--type", "-t", help="Tipo explícito (email, domain, ip, cnpj, cep, username, phone, crypto, person, vehicle_plate)"
     ),
     depth: int = typer.Option(2, "--depth", "-d", min=1, max=3, help="Profundidade da varredura em cascata (1 a 3)"),
     sources: str | None = typer.Option(
         None, "--sources", "-s", help="Lista de IDs de fontes separadas por vírgula"
     ),
+    uf: str | None = typer.Option(
+        None, "--uf", help="Filtro anti-homônimo de UF (ex: SP, RJ, DF)"
+    ),
+    city: str | None = typer.Option(
+        None, "--city", help="Filtro anti-homônimo de Município (ex: Campinas, São Paulo)"
+    ),
     output: str | None = typer.Option(
-        None, "--output", "-o", help="Caminho para exportação do dossiê (.json, .md, .csv)"
+        None, "--output", "-o", help="Caminho para exportação do dossiê (.json, .md, .csv, .html)"
     ),
     export_format: str = typer.Option(
-        "json", "--format", "-f", help="Formato de exportação (json, md, csv)"
+        "json", "--format", "-f", help="Formato de exportação (json, md, csv, html)"
     ),
     legal_basis: LegalBasis = typer.Option(
         LegalBasis.CYBERSECURITY_DEFENSE,
@@ -681,6 +866,11 @@ def cmd_scan(
                 target_type=resolved_type,
                 actor_role=Role.INVESTIGATOR,
             )
+            if uf:
+                target.metadata["filter_uf"] = uf.strip().upper()
+            if city:
+                target.metadata["filter_city"] = city.strip()
+            container.repo.save_target(target)
 
             with console.status(
                 f"[bold gold1]{EYE_OF_HORUS_GLYPH} Varrendo alvo [bright_white]{target.normalized_value}[/bright_white] ({target.type.value})...[/bold gold1]",

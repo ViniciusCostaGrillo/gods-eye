@@ -169,6 +169,65 @@ class PhoneOsintCollector(BaseCollector):
             tags=["phone-osint", "ddd", "geoint"],
         )
 
+        # Public Web Search for Corporate/Public Registrations of this Phone Number
+        if meta["country"] == "BR":
+            from godseye.collectors.brazil_sources import (
+                decode_duckduckgo_url,
+                extract_brazil_entities_from_text,
+            )
+
+            nat_fmt = meta.get("national_format") or ""
+            phone_digits = re.sub(r"\D", "", e164)
+            ddg_url = "https://html.duckduckgo.com/html/"
+            q_phone = f'"{nat_fmt}" OR "{phone_digits[2:]}"' if nat_fmt else f'"{phone_digits}"'
+            discovered_cnpjs_phone: list[str] = []
+            try:
+                p_resp = await self.http_client.fetch_with_retry(
+                    self.id,
+                    ddg_url,
+                    params={"q": q_phone},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+                    },
+                    max_retries=0,
+                )
+                html_text = p_resp.text
+                for m in re.finditer(
+                    r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                    html_text,
+                    re.DOTALL,
+                ):
+                    raw_href, raw_title, raw_snip = m.group(1), m.group(2), m.group(3)
+                    clean_href = decode_duckduckgo_url(raw_href)
+                    title_clean = re.sub(r"<[^>]+>", "", raw_title).strip()
+                    snip_clean = re.sub(r"<[^>]+>", "", raw_snip).strip()
+                    full_block = f"{title_clean} - {snip_clean}"
+                    ents = extract_brazil_entities_from_text(full_block)
+                    for c in ents["cnpjs"]:
+                        if c not in discovered_cnpjs_phone:
+                            discovered_cnpjs_phone.append(c)
+
+                for c in discovered_cnpjs_phone[:2]:
+                    yield self.make_observation(
+                        entity_type=EntityType.ORGANIZATION,
+                        entity_value=f"Empresa Vinculada ao Telefone (CNPJ {c})",
+                        raw_payload={
+                            "discovered_cnpj": c,
+                            "linked_phone": e164,
+                            "source": "phone_public_registration",
+                        },
+                        source_url="https://servicos.receita.fazenda.gov.br/",
+                        confidence=0.88,
+                        verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                        related_to_value=e164,
+                        related_to_type=EntityType.PHONE,
+                        relation=RelationType.ASSOCIATED_WITH,
+                        tags=["phone-osint", "cnpj-lead"],
+                    )
+            except Exception:
+                pass
+
 
 class CryptoOsintCollector(BaseCollector):
     """Crypto OSINT Collector (Section 5): Wallet, Transactions, Clusters & Sanction Screening."""
@@ -619,6 +678,124 @@ class PublicPersonAndLeakCollector(BaseCollector):
                             break
                 except Exception:
                     pass
+
+            # 3. Brazilian Public Web Dorking: Companies (QSA / CNPJ) & Judicial Lawsuits
+            ddg_url = "https://html.duckduckgo.com/html/"
+            from godseye.collectors.brazil_sources import (
+                decode_duckduckgo_url,
+                extract_brazil_entities_from_text,
+            )
+
+            discovered_cnpjs_person: list[str] = []
+            discovered_proc_person: list[str] = []
+            try:
+                # Targeted query for business and judicial involvement with optional anti-homonym filters
+                filter_uf = str((target.metadata or {}).get("filter_uf") or "").strip().upper()
+                filter_city = str((target.metadata or {}).get("filter_city") or "").strip()
+                geo_suffix = ""
+                if filter_city and filter_uf:
+                    geo_suffix = f' ("{filter_city}" OR "{filter_uf}")'
+                elif filter_city:
+                    geo_suffix = f' "{filter_city}"'
+                elif filter_uf:
+                    geo_suffix = f' "{filter_uf}"'
+
+                q_dork = f'"{val}" ("sócio" OR "administrador" OR "CNPJ" OR "processo" OR "tribunal"){geo_suffix}'
+                d_resp = await self.http_client.fetch_with_retry(
+                    self.id,
+                    ddg_url,
+                    params={"q": q_dork},
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                        "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+                    },
+                    max_retries=0,
+                )
+                html_text = d_resp.text
+                for m in re.finditer(
+                    r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                    html_text,
+                    re.DOTALL,
+                ):
+                    raw_href, raw_title, raw_snip = m.group(1), m.group(2), m.group(3)
+                    clean_href = decode_duckduckgo_url(raw_href)
+                    title_clean = re.sub(r"<[^>]+>", "", raw_title).strip()
+                    snip_clean = re.sub(r"<[^>]+>", "", raw_snip).strip()
+                    full_block = f"{title_clean} - {snip_clean}"
+
+                    # Verify name presence
+                    val_lower = val.lower()
+                    if not any(token in full_block.lower() for token in val_lower.split() if len(token) > 3):
+                        continue
+
+                    ents = extract_brazil_entities_from_text(full_block)
+                    for c in ents["cnpjs"]:
+                        if c not in discovered_cnpjs_person:
+                            discovered_cnpjs_person.append(c)
+                    for pr in ents["processes"]:
+                        if pr not in discovered_proc_person:
+                            discovered_proc_person.append(pr)
+
+                    if any(kw in full_block.lower() for kw in ("sócio", "quadro societário", "empresa", "cnpj", "tribunal", "processo", "diário")):
+                        yield self.make_observation(
+                            entity_type=EntityType.DOCUMENT,
+                            entity_value=f"Registro Público / Menção: {title_clean[:80]}",
+                            raw_payload={
+                                "title": title_clean,
+                                "summary": snip_clean[:260],
+                                "url": clean_href,
+                                "matched_person_name": val,
+                                "discovered_cnpjs": ents["cnpjs"],
+                                "discovered_processes": ents["processes"],
+                            },
+                            source_url=clean_href,
+                            confidence=0.87,
+                            verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                            related_to_value=val,
+                            related_to_type=EntityType.PERSON,
+                            relation=RelationType.MENTIONED_IN,
+                            tags=["person-osint", "public-records", "brazil"],
+                        )
+
+                # Yield dedicated organization observations for discovered CNPJs
+                for c in discovered_cnpjs_person[:3]:
+                    yield self.make_observation(
+                        entity_type=EntityType.ORGANIZATION,
+                        entity_value=f"Empresa Vinculada (CNPJ {c})",
+                        raw_payload={
+                            "discovered_cnpj": c,
+                            "matched_person_name": val,
+                            "source": "person_public_records",
+                        },
+                        source_url="https://servicos.receita.fazenda.gov.br/",
+                        confidence=0.89,
+                        verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                        related_to_value=val,
+                        related_to_type=EntityType.PERSON,
+                        relation=RelationType.ASSOCIATED_WITH,
+                        tags=["person-osint", "cnpj-lead", "qsa-lead"],
+                    )
+
+                # Yield dedicated legal case observations for discovered processes
+                for pr in discovered_proc_person[:3]:
+                    yield self.make_observation(
+                        entity_type=EntityType.LEGAL_CASE,
+                        entity_value=f"Processo Judicial: {pr}",
+                        raw_payload={
+                            "discovered_process": pr,
+                            "matched_person_name": val,
+                            "source": "person_public_records",
+                        },
+                        source_url="https://www.cnj.jus.br/sistemas/datajud/",
+                        confidence=0.86,
+                        verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                        related_to_value=val,
+                        related_to_type=EntityType.PERSON,
+                        relation=RelationType.HAS_CASE,
+                        tags=["person-osint", "process-lead", "juridico"],
+                    )
+            except Exception:
+                pass
 
         elif target.type == TargetType.EMAIL:
             # 1. XposedOrNot free zero-key breach check for email

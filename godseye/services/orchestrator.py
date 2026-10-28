@@ -336,14 +336,33 @@ class InvestigationOrchestrator:
                     )
                     cascaded.append(user_target)
 
-            # 4b. CPF (Person) -> Discovered Person Full Name from Diários Oficiais / Portal da Transparência
-            if parent_target.type == TargetType.PERSON and obs.entity_type == EntityType.PERSON:
+            # 4b. CPF (Person) or Phone -> Discovered Person Full Name from Diários Oficiais / Portal da Transparência
+            if parent_target.type in (TargetType.PERSON, TargetType.PHONE) and obs.entity_type == EntityType.PERSON:
                 disc_name = str(obs.raw_payload.get("discovered_person_name") or "").strip()
                 if disc_name and len(cascaded) < 2:
                     name_target = self.case_service.add_target(
                         case_id, disc_name, TargetType.PERSON, actor_id=actor_id, actor_role=actor_role
                     )
                     cascaded.append(name_target)
+
+            # 4c. Person / CPF / Phone -> Discovered CNPJs (automatic pivot to corporate enrichment)
+            disc_cnpj = str(obs.raw_payload.get("discovered_cnpj") or "").strip()
+            if disc_cnpj and len(cascaded) < 4:
+                cnpj_digits = re.sub(r"\D", "", disc_cnpj)
+                if len(cnpj_digits) == 14:
+                    cnpj_target = self.case_service.add_target(
+                        case_id, disc_cnpj, TargetType.CNPJ, actor_id=actor_id, actor_role=actor_role
+                    )
+                    cascaded.append(cnpj_target)
+
+            # 4d. Person / CPF -> Discovered Lawsuits (automatic pivot to CNJ decoding)
+            disc_proc = str(obs.raw_payload.get("discovered_process") or "").strip()
+            if disc_proc and len(cascaded) < 5:
+                if re.match(r"^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$", disc_proc):
+                    proc_target = self.case_service.add_target(
+                        case_id, disc_proc, TargetType.PROCESSO, actor_id=actor_id, actor_role=actor_role
+                    )
+                    cascaded.append(proc_target)
 
             # 5. Username -> Public Commit Email -> Breach / Leak Check
             if parent_target.type == TargetType.USERNAME and obs.entity_type == EntityType.EMAIL:

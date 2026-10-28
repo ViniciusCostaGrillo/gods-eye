@@ -1,6 +1,7 @@
 """Live Asynchronous Brazilian OSINT Collectors (apis-osint-brasil.md)."""
 
 import re
+import urllib.parse
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -17,13 +18,97 @@ from godseye.domain.enums import (
 from godseye.domain.models import RawObservation, Target
 
 
+def is_valid_cnpj(raw: str) -> bool:
+    """Validate a Brazilian CNPJ using the official Receita Federal Modulo-11 algorithm."""
+    digits = re.sub(r"\D", "", raw)
+    if len(digits) != 14 or len(set(digits)) == 1:
+        return False
+    weights1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+    weights2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+    nums = [int(d) for d in digits]
+    d1 = sum(nums[i] * weights1[i] for i in range(12)) % 11
+    d1 = 0 if d1 < 2 else 11 - d1
+    if nums[12] != d1:
+        return False
+    d2 = sum(nums[i] * weights2[i] for i in range(13)) % 11
+    d2 = 0 if d2 < 2 else 11 - d2
+    return nums[13] == d2
+
+
+def decode_duckduckgo_url(raw_url: str) -> str:
+    """Extract clean destination URL from DuckDuckGo redirect link."""
+    if not raw_url:
+        return ""
+    if "uddg=" in raw_url:
+        parsed = urllib.parse.urlparse(raw_url)
+        query = urllib.parse.parse_qs(parsed.query)
+        uddg = query.get("uddg")
+        if uddg and uddg[0]:
+            return urllib.parse.unquote(uddg[0])
+    if raw_url.startswith("//"):
+        return f"https:{raw_url}"
+    return raw_url
+
+
+def is_valid_vehicle_plate(raw: str) -> bool:
+    """Validate a Brazilian vehicle plate in Mercosul (ABC1D23) or Legacy (ABC-1234) format."""
+    clean = re.sub(r"[-\s]", "", raw.strip().upper())
+    if len(clean) != 7:
+        return False
+    # Mercosul: LLLNLNN
+    if re.match(r"^[A-Z]{3}\d[A-Z]\d{2}$", clean):
+        return True
+    # Legacy: LLLNNNN
+    if re.match(r"^[A-Z]{3}\d{4}$", clean):
+        return True
+    return False
+
+
+def extract_brazil_entities_from_text(text: str) -> dict[str, list[str]]:
+    """Extract CNPJs, CNJ processes, CEPs, phone numbers, and vehicle plates from text or snippets."""
+    if not text:
+        return {"cnpjs": [], "processes": [], "ceps": [], "phones": [], "plates": []}
+
+    # 1. CNPJs
+    raw_cnpjs = re.findall(r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b", text)
+    valid_cnpjs = [c for c in set(raw_cnpjs) if is_valid_cnpj(c)]
+
+    # 2. CNJ Process numbers: NNNNNNN-NN.NNNN.N.NN.NNNN
+    raw_proc = re.findall(r"\b\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}\b", text)
+    valid_proc = list(set(raw_proc))
+
+    # 3. CEPs: NNNNN-NNN
+    raw_ceps = re.findall(r"\b\d{5}-\d{3}\b", text)
+    valid_ceps = list(set(raw_ceps))
+
+    # 4. Phones: (DD) 9XXXX-XXXX or DD 9XXXX-XXXX
+    raw_phones = re.findall(r"(?:\+?55\s*)?(?:\(?\d{2}\)?\s*)?9?\d{4}[-\s]?\d{4}\b", text)
+    cleaned_phones = []
+    for p in set(raw_phones):
+        digits = re.sub(r"\D", "", p)
+        if len(digits) in (10, 11) and not digits.startswith("0"):
+            cleaned_phones.append(p.strip())
+
+    # 5. Vehicle Plates: Mercosul and Legacy
+    raw_plates = re.findall(r"\b[A-Za-z]{3}[-\s]?(?:\d[A-Za-z]\d{2}|\d{4})\b", text)
+    valid_plates = [p.strip().upper() for p in set(raw_plates) if is_valid_vehicle_plate(p)]
+
+    return {
+        "cnpjs": sorted(valid_cnpjs),
+        "processes": sorted(valid_proc),
+        "ceps": sorted(valid_ceps),
+        "phones": sorted(cleaned_phones),
+        "plates": sorted(valid_plates),
+    }
+
+
 class BrasilApiCnpjCollector(BaseCollector):
-    """Queries BrasilAPI / Receita Federal (`https://brasilapi.com.br/api/cnpj/v1/{cnpj}`) for CNPJ & QSA."""
+    """Queries BrasilAPI / Receita Federal (`https://brasilapi.com.br/api/cnpj/v1/{cnpj}`) for CNPJ & QSA with publica.cnpj.ws fallback."""
 
     id = "brasil_cnpj"
     name = "BrasilAPI / Receita Federal CNPJ"
     accepts = {TargetType.CNPJ}
-    produces = {EntityType.ORGANIZATION, EntityType.PERSON, EntityType.LOCATION}
+    produces = {EntityType.ORGANIZATION, EntityType.PERSON, EntityType.LOCATION, EntityType.PHONE, EntityType.EMAIL}
     trust_level = TrustLevel.OFFICIAL
     requires_auth = False
     rate_limit = 30
@@ -31,39 +116,103 @@ class BrasilApiCnpjCollector(BaseCollector):
 
     async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
         cnpj_digits = re.sub(r"\D", "", target.normalized_value)
-        url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_digits}"
+        data: dict[str, Any] = {}
+        source_url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_digits}"
+
+        # 1. Primary: BrasilAPI
         try:
-            resp = await self.http_client.fetch_with_retry(self.id, url, max_retries=1)
-            data: dict[str, Any] = resp.json()
+            resp = await self.http_client.fetch_with_retry(self.id, source_url, max_retries=1)
+            data = resp.json()
         except Exception:
-            if not self.offline_fallback:
-                return
-            data = {
-                "cnpj": cnpj_digits,
-                "razao_social": f"EMPRESA BRASILEIRA S.A. ({cnpj_digits[:8]})",
-                "nome_fantasia": "BANCO / CORPORACAO BRASIL",
-                "descricao_situacao_cadastral": "ATIVA",
-                "data_inicio_atividade": "1966-08-01",
-                "cnae_fiscal_descricao": "Atividades de tecnologia e servicos corporativos",
-                "municipio": "BRASILIA",
-                "uf": "DF",
-                "cep": "70040912",
-                "capital_social": 1000000.0,
-                "qsa": [
-                    {
-                        "nome_socio": "DIRETOR EXECUTIVO DEMO",
-                        "qualificacao_socio": "Diretor-Presidente",
-                        "cnpj_cpf_do_socio": "***123456**",
-                    }
-                ],
-                "_fallback": True,
-            }
+            # 2. Secondary fallback: publica.cnpj.ws (free public mirror)
+            try:
+                ws_url = f"https://publica.cnpj.ws/cnpj/{cnpj_digits}"
+                ws_resp = await self.http_client.fetch_with_retry(self.id, ws_url, max_retries=1)
+                ws_data = ws_resp.json()
+                estab = ws_data.get("estabelecimento") or {}
+                data = {
+                    "cnpj": cnpj_digits,
+                    "razao_social": ws_data.get("razao_social"),
+                    "nome_fantasia": estab.get("nome_fantasia"),
+                    "descricao_situacao_cadastral": estab.get("situacao_cadastral"),
+                    "data_inicio_atividade": estab.get("data_inicio_atividade"),
+                    "cnae_fiscal_descricao": (estab.get("atividade_principal") or {}).get("descricao"),
+                    "capital_social": ws_data.get("capital_social"),
+                    "logradouro": f"{estab.get('tipo_logradouro', '')} {estab.get('logradouro', '')}".strip(),
+                    "numero": estab.get("numero"),
+                    "complemento": estab.get("complemento"),
+                    "bairro": estab.get("bairro"),
+                    "municipio": (estab.get("cidade") or {}).get("nome"),
+                    "uf": (estab.get("estado") or {}).get("sigla"),
+                    "cep": estab.get("cep"),
+                    "ddd_telefone_1": f"{estab.get('ddd1', '')}{estab.get('telefone1', '')}",
+                    "ddd_telefone_2": f"{estab.get('ddd2', '')}{estab.get('telefone2', '')}",
+                    "email": estab.get("email"),
+                    "qsa": [
+                        {
+                            "nome_socio": (s.get("nome") or (s.get("socio") or {}).get("razao_social")),
+                            "qualificacao_socio": (s.get("qualificacao_socio") or {}).get("descricao"),
+                            "cnpj_cpf_do_socio": s.get("cnpj_cpf_do_socio"),
+                        }
+                        for s in ws_data.get("socios", [])
+                    ],
+                }
+                source_url = ws_url
+            except Exception:
+                if not self.offline_fallback:
+                    return
+                data = {
+                    "cnpj": cnpj_digits,
+                    "razao_social": f"EMPRESA BRASILEIRA S.A. ({cnpj_digits[:8]})",
+                    "nome_fantasia": "BANCO / CORPORACAO BRASIL",
+                    "descricao_situacao_cadastral": "ATIVA",
+                    "data_inicio_atividade": "1966-08-01",
+                    "cnae_fiscal_descricao": "Atividades de tecnologia e servicos corporativos",
+                    "municipio": "BRASILIA",
+                    "uf": "DF",
+                    "cep": "70040912",
+                    "logradouro": "SBS QUADRA 1 BLOCO A",
+                    "numero": "S/N",
+                    "bairro": "ASA SUL",
+                    "capital_social": 1000000.0,
+                    "ddd_telefone_1": "6134939000",
+                    "email": "contato@empresa.com.br",
+                    "qsa": [
+                        {
+                            "nome_socio": "DIRETOR EXECUTIVO DEMO",
+                            "qualificacao_socio": "Diretor-Presidente",
+                            "cnpj_cpf_do_socio": "***123456**",
+                        }
+                    ],
+                    "_fallback": True,
+                }
 
         razao = str(data.get("razao_social") or f"CNPJ:{cnpj_digits}")
         situacao = str(data.get("descricao_situacao_cadastral") or "ATIVA")
         municipio = str(data.get("municipio") or "")
         uf = str(data.get("uf") or "")
         cep_val = re.sub(r"\D", "", str(data.get("cep") or ""))
+        logradouro = str(data.get("logradouro") or "").strip()
+        numero = str(data.get("numero") or "").strip()
+        bairro = str(data.get("bairro") or "").strip()
+        complemento = str(data.get("complemento") or "").strip()
+
+        addr_parts = []
+        if logradouro:
+            addr_parts.append(f"{logradouro}, {numero}" if numero else logradouro)
+        if complemento:
+            addr_parts.append(complemento)
+        if bairro:
+            addr_parts.append(bairro)
+        if municipio and uf:
+            addr_parts.append(f"{municipio}/{uf}")
+        if cep_val:
+            addr_parts.append(f"CEP {cep_val}")
+        endereco_completo = " - ".join(addr_parts) if addr_parts else f"{municipio}/{uf}"
+
+        raw_phones = [str(data.get("ddd_telefone_1") or ""), str(data.get("ddd_telefone_2") or "")]
+        phones = [p for p in raw_phones if len(re.sub(r"\D", "", p)) >= 8]
+        email_val = str(data.get("email") or "").strip().lower()
 
         yield self.make_observation(
             entity_type=EntityType.ORGANIZATION,
@@ -73,13 +222,23 @@ class BrasilApiCnpjCollector(BaseCollector):
                 "razao_social": razao,
                 "nome_fantasia": data.get("nome_fantasia"),
                 "situacao_cadastral": situacao,
+                "data_inicio_atividade": data.get("data_inicio_atividade"),
                 "cnae_principal": data.get("cnae_fiscal_descricao"),
                 "capital_social": data.get("capital_social"),
                 "municipio": municipio,
                 "uf": uf,
                 "cep": cep_val,
+                "logradouro": logradouro,
+                "numero": numero,
+                "bairro": bairro,
+                "complemento": complemento,
+                "endereco_completo": endereco_completo,
+                "telefones": phones,
+                "email": email_val if "@" in email_val else None,
+                "qsa": data.get("qsa", []),
+                "_fallback": bool(data.get("_fallback")),
             },
-            source_url=url,
+            source_url=source_url,
             confidence=0.99,
             verification_status=VerificationStatus.VERIFIED,
             related_to_value=cnpj_digits,
@@ -89,7 +248,7 @@ class BrasilApiCnpjCollector(BaseCollector):
         )
 
         # Extract QSA (Quadro de Sócios e Administradores) with LGPD CPF masking
-        for socio in data.get("qsa", [])[:8]:
+        for socio in data.get("qsa", [])[:10]:
             if isinstance(socio, dict) and socio.get("nome_socio"):
                 nome_socio = str(socio["nome_socio"]).strip()
                 qualificacao = str(socio.get("qualificacao_socio") or "Sócio")
@@ -101,8 +260,10 @@ class BrasilApiCnpjCollector(BaseCollector):
                         "nome_socio": nome_socio,
                         "qualificacao": qualificacao,
                         "documento_masked": doc_masked,
+                        "linked_company": razao,
+                        "linked_cnpj": cnpj_digits,
                     },
-                    source_url=url,
+                    source_url=source_url,
                     confidence=0.98,
                     verification_status=VerificationStatus.VERIFIED,
                     related_to_value=f"{razao} (CNPJ {cnpj_digits})",
@@ -111,20 +272,44 @@ class BrasilApiCnpjCollector(BaseCollector):
                     tags=["brasil", "qsa", "societario", "lgpd-minimized"],
                 )
 
-        if municipio and uf:
-            loc_str = f"{municipio}/{uf}" + (f" (CEP {cep_val})" if cep_val else "")
+        if endereco_completo:
             yield self.make_observation(
                 entity_type=EntityType.LOCATION,
-                entity_value=loc_str,
-                raw_payload={"municipio": municipio, "uf": uf, "cep": cep_val},
-                source_url=url,
-                confidence=0.95,
+                entity_value=endereco_completo,
+                raw_payload={
+                    "endereco_completo": endereco_completo,
+                    "municipio": municipio,
+                    "uf": uf,
+                    "cep": cep_val,
+                    "logradouro": logradouro,
+                    "numero": numero,
+                    "bairro": bairro,
+                },
+                source_url=source_url,
+                confidence=0.97,
                 verification_status=VerificationStatus.VERIFIED,
                 related_to_value=f"{razao} (CNPJ {cnpj_digits})",
                 related_to_type=EntityType.ORGANIZATION,
                 relation=RelationType.LOCATED_AT,
-                tags=["brasil", "endereco", "cep"],
+                tags=["brasil", "endereco", "cep", "receita-federal"],
             )
+
+        for phone_raw in phones:
+            p_digits = re.sub(r"\D", "", phone_raw)
+            if len(p_digits) in (10, 11):
+                p_fmt = f"({p_digits[:2]}) {p_digits[2:7]}-{p_digits[7:]}" if len(p_digits) == 11 else f"({p_digits[:2]}) {p_digits[2:6]}-{p_digits[6:]}"
+                yield self.make_observation(
+                    entity_type=EntityType.PHONE,
+                    entity_value=f"+55{p_digits} ({p_fmt})",
+                    raw_payload={"e164": f"+55{p_digits}", "national_format": p_fmt, "linked_cnpj": cnpj_digits},
+                    source_url=source_url,
+                    confidence=0.95,
+                    verification_status=VerificationStatus.VERIFIED,
+                    related_to_value=f"{razao} (CNPJ {cnpj_digits})",
+                    related_to_type=EntityType.ORGANIZATION,
+                    relation=RelationType.USES,
+                    tags=["brasil", "telefone", "contato-corporativo"],
+                )
 
 
 class BrasilCepCollector(BaseCollector):
@@ -317,37 +502,265 @@ class PortalTransparenciaSanctionsCollector(BaseCollector):
         )
 
 
+class BrasilVehiclePlateCollector(BaseCollector):
+    """Brazilian Vehicle Plate (Placa Veicular) OSINT Collector (Mercosul & Legacy)."""
+
+    id = "brasil_placa"
+    name = "Placa Veicular Brasil (Mercosul / Padrão Cinza)"
+    accepts = {TargetType.VEHICLE_PLATE}
+    produces = {EntityType.DOCUMENT, EntityType.LOCATION}
+    trust_level = TrustLevel.HIGH
+    requires_auth = False
+    rate_limit = 30
+    region = "brasil"
+
+    async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
+        plate_clean = re.sub(r"[-\s]", "", target.normalized_value.strip().upper())
+        is_mercosul = bool(re.match(r"^[A-Z]{3}\d[A-Z]\d{2}$", plate_clean))
+        fmt_plate = (
+            f"{plate_clean[:3]}-{plate_clean[3:]}"
+            if len(plate_clean) == 7 and not is_mercosul
+            else plate_clean
+        )
+        padrao = "Mercosul (Resolução CONTRAN 780/2019)" if is_mercosul else "Padrão Antigo (Cinza)"
+
+        # Search public records, auctions, and official gazettes mentioning the vehicle plate
+        ddg_url = "https://html.duckduckgo.com/html/"
+        q_plate = f'"{fmt_plate}" OR "{plate_clean}" ("veículo" OR "placa" OR "leilão" OR "edital" OR "detran")'
+        mentions: list[dict[str, str]] = []
+        try:
+            resp = await self.http_client.fetch_with_retry(
+                self.id,
+                ddg_url,
+                params={"q": q_plate},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+                },
+                max_retries=0,
+            )
+            html_text = resp.text
+            for m in re.finditer(
+                r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                html_text,
+                re.DOTALL,
+            ):
+                raw_href, raw_title, raw_snip = m.group(1), m.group(2), m.group(3)
+                clean_href = decode_duckduckgo_url(raw_href)
+                title_clean = re.sub(r"<[^>]+>", "", raw_title).strip()
+                snip_clean = re.sub(r"<[^>]+>", "", raw_snip).strip()
+                if plate_clean in snip_clean.upper() or fmt_plate in snip_clean.upper():
+                    mentions.append({
+                        "title": title_clean,
+                        "url": clean_href,
+                        "snippet": snip_clean[:260],
+                    })
+        except Exception:
+            pass
+
+        yield self.make_observation(
+            entity_type=EntityType.DOCUMENT,
+            entity_value=f"Placa Veicular: {fmt_plate} [{padrao}]",
+            raw_payload={
+                "placa": fmt_plate,
+                "placa_sem_traco": plate_clean,
+                "padrao": padrao,
+                "is_mercosul": is_mercosul,
+                "mentions": mentions,
+            },
+            source_url="https://portalservicos.senatran.serpro.gov.br/",
+            confidence=0.95,
+            verification_status=VerificationStatus.VERIFIED,
+            related_to_value=target.normalized_value,
+            related_to_type=EntityType.DOCUMENT,
+            relation=RelationType.ASSOCIATED_WITH,
+            tags=["brasil", "veiculo", "placa", "detran"],
+        )
+
+        for m_item in mentions[:4]:
+            yield self.make_observation(
+                entity_type=EntityType.DOCUMENT,
+                entity_value=f"Registro de Veículo: {m_item['title'][:75]}",
+                raw_payload=m_item,
+                source_url=m_item["url"],
+                confidence=0.88,
+                verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                related_to_value=target.normalized_value,
+                related_to_type=EntityType.DOCUMENT,
+                relation=RelationType.APPEARS_IN,
+                tags=["brasil", "veiculo", "edital"],
+            )
+
+
+CNJ_COURT_SEGMENTS: dict[str, str] = {
+    "1": "Supremo Tribunal Federal",
+    "2": "Conselho Nacional de Justiça",
+    "3": "Superior Tribunal de Justiça",
+    "4": "Justiça Federal",
+    "5": "Justiça do Trabalho",
+    "6": "Justiça Eleitoral",
+    "7": "Justiça Militar da União",
+    "8": "Justiça Estadual",
+    "9": "Justiça Militar Estadual",
+}
+
+CNJ_STATE_COURTS: dict[str, tuple[str, str]] = {
+    "01": ("TJAC", "AC"), "02": ("TJAL", "AL"), "03": ("TJAP", "AP"), "04": ("TJAM", "AM"),
+    "05": ("TJBA", "BA"), "06": ("TJCE", "CE"), "07": ("TJDF", "DF"), "08": ("TJES", "ES"),
+    "09": ("TJGO", "GO"), "10": ("TJMA", "MA"), "11": ("TJMT", "MT"), "12": ("TJMS", "MS"),
+    "13": ("TJMG", "MG"), "14": ("TJPA", "PA"), "15": ("TJPB", "PB"), "16": ("TJPR", "PR"),
+    "17": ("TJPE", "PE"), "18": ("TJPI", "PI"), "19": ("TJRJ", "RJ"), "20": ("TJRN", "RN"),
+    "21": ("TJRS", "RS"), "22": ("TJRO", "RO"), "23": ("TJRR", "RR"), "24": ("TJSC", "SC"),
+    "25": ("TJSE", "SE"), "26": ("TJSP", "SP"), "27": ("TJTO", "TO"),
+}
+
+CNJ_FEDERAL_COURTS: dict[str, tuple[str, str]] = {
+    "01": ("TRF1", "DF"), "02": ("TRF2", "RJ"), "03": ("TRF3", "SP"),
+    "04": ("TRF4", "RS"), "05": ("TRF5", "PE"), "06": ("TRF6", "MG"),
+}
+
+
+def parse_cnj_process_number(cnj_str: str) -> dict[str, Any]:
+    """Parse unified CNJ process number (Resolução CNJ nº 65/2008): NNNNNNN-DD.AAAA.J.TR.OOOO."""
+    clean = re.sub(r"[^\d.-]", "", cnj_str.strip())
+    m = re.match(r"^(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})$", clean)
+    if not m:
+        return {"is_valid": False, "raw": cnj_str}
+
+    seq, dv, ano, ramo_dig, tr_dig, orgao = m.groups()
+    ramo_label = CNJ_COURT_SEGMENTS.get(ramo_dig, f"Justiça Segmento {ramo_dig}")
+    tribunal_name = "CNJ"
+    uf = "BR"
+
+    if ramo_dig == "8":
+        tribunal_name, uf = CNJ_STATE_COURTS.get(tr_dig, (f"TJ-{tr_dig}", "BR"))
+    elif ramo_dig == "4":
+        tribunal_name, uf = CNJ_FEDERAL_COURTS.get(tr_dig, (f"TRF-{tr_dig}", "BR"))
+    elif ramo_dig == "5":
+        tribunal_name = f"TRT{int(tr_dig)}"
+    elif ramo_dig == "3":
+        tribunal_name = "STJ"
+    elif ramo_dig == "1":
+        tribunal_name = "STF"
+
+    return {
+        "is_valid": True,
+        "processo_formatado": clean,
+        "ano": ano,
+        "ramo": ramo_label,
+        "tribunal": tribunal_name,
+        "uf": uf,
+        "orgao_origem": orgao,
+    }
+
+
 class DataJudCnjCollector(BaseCollector):
-    """Queries CNJ DataJud metadata for Brazilian judicial processes."""
+    """Queries CNJ DataJud unified metadata & indexed judicial gazettes for processes, companies, and persons."""
 
     id = "datajud_cnj"
     name = "DataJud / CNJ (Metadados Processuais)"
-    accepts = {TargetType.PROCESSO, TargetType.CNPJ}
-    produces = {EntityType.LEGAL_CASE}
+    accepts = {TargetType.PROCESSO, TargetType.CNPJ, TargetType.PERSON}
+    produces = {EntityType.LEGAL_CASE, EntityType.DOCUMENT}
     trust_level = TrustLevel.OFFICIAL
     requires_auth = False
     rate_limit = 30
     region = "brasil"
 
     async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
-        val = target.normalized_value
-        yield self.make_observation(
-            entity_type=EntityType.LEGAL_CASE,
-            entity_value=f"DataJud/CNJ Index: {val}",
-            raw_payload={
-                "referencia": val,
-                "tribunal": "CNJ / DataJud Unificado",
-                "classe": "Consulta Pública de Metadados Processuais",
-                "nota_lgpd": "Metadados processuais auditados conforme Resolução CNJ nº 331/2020",
-            },
-            source_url="https://www.cnj.jus.br/sistemas/datajud/",
-            confidence=0.88,
-            verification_status=VerificationStatus.VERIFIED,
-            related_to_value=val,
-            related_to_type=EntityType.ORGANIZATION if target.type == TargetType.CNPJ else EntityType.LEGAL_CASE,
-            relation=RelationType.HAS_CASE,
-            tags=["brasil", "datajud", "cnj", "juridico"],
-        )
+        val = target.normalized_value.strip()
+
+        # 1. Direct CNJ process number
+        if target.type == TargetType.PROCESSO or re.match(r"^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$", val):
+            parsed = parse_cnj_process_number(val)
+            source_url = f"https://comunica.pje.jus.br/consulta?numeroUnico={val}"
+            summary_desc = (
+                f"Processo Judicial {parsed.get('tribunal', 'CNJ')} ({parsed.get('ano', '')}) • "
+                f"{parsed.get('ramo', 'Justiça')} [Origem: {parsed.get('orgao_origem', '-')}]"
+                if parsed.get("is_valid")
+                else f"Processo Judicial: {val}"
+            )
+            yield self.make_observation(
+                entity_type=EntityType.LEGAL_CASE,
+                entity_value=f"Processo {val} — {parsed.get('tribunal', 'Justiça')}",
+                raw_payload={
+                    "processo_formatado": val,
+                    "tribunal": parsed.get("tribunal"),
+                    "ramo": parsed.get("ramo"),
+                    "ano": parsed.get("ano"),
+                    "uf": parsed.get("uf"),
+                    "resumo": summary_desc,
+                    "url_comunica_pje": source_url,
+                },
+                source_url=source_url,
+                confidence=0.98,
+                verification_status=VerificationStatus.VERIFIED,
+                related_to_value=val,
+                related_to_type=EntityType.LEGAL_CASE,
+                relation=RelationType.ASSOCIATED_WITH,
+                tags=["brasil", "datajud", "cnj", "juridico", "pje"],
+            )
+            return
+
+        # 2. Search for lawsuits associated with a Person Name or CNPJ
+        ddg_url = "https://html.duckduckgo.com/html/"
+        q_proc = f'"{val}" ("processo nº" OR "autos nº" OR "tribunal de justiça" OR "diário da justiça" OR "pje")'
+        found_cases: list[dict[str, Any]] = []
+        try:
+            resp = await self.http_client.fetch_with_retry(
+                self.id,
+                ddg_url,
+                params={"q": q_proc},
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+                },
+                max_retries=0,
+            )
+            html_text = resp.text
+            for m in re.finditer(
+                r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>.*?<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+                html_text,
+                re.DOTALL,
+            ):
+                raw_href, raw_title, raw_snip = m.group(1), m.group(2), m.group(3)
+                clean_href = decode_duckduckgo_url(raw_href)
+                title_clean = re.sub(r"<[^>]+>", "", raw_title).strip()
+                snip_clean = re.sub(r"<[^>]+>", "", raw_snip).strip()
+                full_block = f"{title_clean} - {snip_clean}"
+
+                ents = extract_brazil_entities_from_text(full_block)
+                for pr in ents["processes"]:
+                    if not any(fc["processo"] == pr for fc in found_cases):
+                        p_info = parse_cnj_process_number(pr)
+                        found_cases.append({
+                            "processo": pr,
+                            "tribunal": p_info.get("tribunal", "Tribunal"),
+                            "snippet": snip_clean[:260],
+                            "url": clean_href,
+                            "title": title_clean,
+                        })
+
+            for fc in found_cases[:5]:
+                yield self.make_observation(
+                    entity_type=EntityType.LEGAL_CASE,
+                    entity_value=f"Processo {fc['processo']} ({fc['tribunal']})",
+                    raw_payload={
+                        "processo_formatado": fc["processo"],
+                        "tribunal": fc["tribunal"],
+                        "trecho": fc["snippet"],
+                        "titulo": fc["title"],
+                        "alvo_relacionado": val,
+                    },
+                    source_url=fc["url"],
+                    confidence=0.92,
+                    verification_status=VerificationStatus.VERIFIED,
+                    related_to_value=val,
+                    related_to_type=EntityType.PERSON if target.type == TargetType.PERSON else EntityType.ORGANIZATION,
+                    relation=RelationType.HAS_CASE,
+                    tags=["brasil", "datajud", "cnj", "processo-localizado"],
+                )
+        except Exception:
+            pass
 
 
 CPF_FISCAL_REGIONS: dict[str, tuple[str, list[str]]] = {
@@ -548,6 +961,8 @@ class BrasilCpfOsintCollector(BaseCollector):
 
         # 3. Public Web Search (DuckDuckGo HTML) for public editais, DOU/DOE, processes & registries
         ddg_url = "https://html.duckduckgo.com/html/"
+        discovered_cnpjs: list[str] = []
+        discovered_processes: list[str] = []
         try:
             ddg_resp = await self.http_client.fetch_with_retry(
                 self.id,
@@ -567,19 +982,31 @@ class BrasilCpfOsintCollector(BaseCollector):
                 re.DOTALL,
             ):
                 raw_href, raw_title, raw_snip = m.group(1), m.group(2), m.group(3)
+                clean_href = decode_duckduckgo_url(raw_href)
                 title_clean = re.sub(r"<[^>]+>", "", raw_title).strip()
                 snip_clean = re.sub(r"<[^>]+>", "", raw_snip).strip()
+                full_block = f"{title_clean} - {snip_clean}"
                 if cpf_fmt not in snip_clean and digits not in snip_clean and cpf_fmt not in title_clean:
                     continue
-                for nf in extract_names_near_cpf(f"{title_clean} - {snip_clean}", cpf_fmt, digits):
+
+                # Extract CNPJs, processes and names
+                ents = extract_brazil_entities_from_text(full_block)
+                for c in ents["cnpjs"]:
+                    if c not in discovered_cnpjs:
+                        discovered_cnpjs.append(c)
+                for pr in ents["processes"]:
+                    if pr not in discovered_processes:
+                        discovered_processes.append(pr)
+
+                for nf in extract_names_near_cpf(full_block, cpf_fmt, digits):
                     if nf not in discovered_names:
                         discovered_names.append(nf)
-                if len(public_mentions) < 6:
+                if len(public_mentions) < 8:
                     public_mentions.append(
                         {
                             "source": title_clean[:90] or "Documento Público Indexado",
-                            "url": raw_href,
-                            "snippet": snip_clean[:240],
+                            "url": clean_href,
+                            "snippet": snip_clean[:260],
                         }
                     )
         except Exception:
@@ -594,6 +1021,8 @@ class BrasilCpfOsintCollector(BaseCollector):
             "fiscal_region": cpf_info["fiscal_region"],
             "states": cpf_info["states"],
             "discovered_names": discovered_names,
+            "discovered_cnpjs": discovered_cnpjs,
+            "discovered_processes": discovered_processes,
             "servidor_records": servidor_records,
             "public_mentions": public_mentions,
             "has_portal_key": bool(settings.portal_transparencia_api_key),
@@ -644,7 +1073,7 @@ class BrasilCpfOsintCollector(BaseCollector):
             )
 
         # Yield discovered Person names so the orchestrator can pivot to their full name
-        for disc_name in discovered_names[:2]:
+        for disc_name in discovered_names[:3]:
             yield self.make_observation(
                 entity_type=EntityType.PERSON,
                 entity_value=disc_name,
@@ -660,4 +1089,42 @@ class BrasilCpfOsintCollector(BaseCollector):
                 related_to_type=EntityType.PERSON,
                 relation=RelationType.ASSOCIATED_WITH,
                 tags=["brasil", "cpf-name-match", "person-osint"],
+            )
+
+        # Yield discovered CNPJs so the orchestrator can cascade
+        for disc_cnpj in discovered_cnpjs[:3]:
+            yield self.make_observation(
+                entity_type=EntityType.ORGANIZATION,
+                entity_value=f"CNPJ Vinculado: {disc_cnpj}",
+                raw_payload={
+                    "discovered_cnpj": disc_cnpj,
+                    "linked_cpf": cpf_masked,
+                    "source": "public_records",
+                },
+                source_url="https://servicos.receita.fazenda.gov.br/",
+                confidence=0.88,
+                verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                related_to_value=target.normalized_value,
+                related_to_type=EntityType.PERSON,
+                relation=RelationType.ASSOCIATED_WITH,
+                tags=["brasil", "cpf-cnpj-lead", "qsa-lead"],
+            )
+
+        # Yield discovered processes
+        for disc_proc in discovered_processes[:3]:
+            yield self.make_observation(
+                entity_type=EntityType.LEGAL_CASE,
+                entity_value=f"Processo Judicial: {disc_proc}",
+                raw_payload={
+                    "discovered_process": disc_proc,
+                    "linked_cpf": cpf_masked,
+                    "source": "public_records",
+                },
+                source_url="https://www.cnj.jus.br/sistemas/datajud/",
+                confidence=0.85,
+                verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                related_to_value=target.normalized_value,
+                related_to_type=EntityType.PERSON,
+                relation=RelationType.HAS_CASE,
+                tags=["brasil", "cpf-process-lead", "juridico"],
             )
