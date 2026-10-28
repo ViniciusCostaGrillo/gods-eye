@@ -47,6 +47,20 @@ def test_target_detection_and_normalization_expansion() -> None:
     # Image file target
     assert detect_target_type("suspect_photo.jpg") == TargetType.IMAGE
 
+    # Person full names & usernames
+    assert detect_target_type("Linus Torvalds") == TargetType.PERSON
+    assert detect_target_type("João da Silva") == TargetType.PERSON
+    assert detect_target_type("torvalds") == TargetType.USERNAME
+    assert detect_target_type("11988887777") == TargetType.PHONE
+
+
+def test_collectors_never_fabricate_on_failure(container: AppContainer) -> None:
+    """Breach/leak collectors must not emit fake records when APIs fail or find nothing."""
+    adapter_ids = {a.id for a in container.registry.get_adapters_for_target(TargetType.PERSON)}
+    assert "person_and_leak_osint" in adapter_ids
+    email_ids = {a.id for a in container.registry.get_adapters_for_target(TargetType.EMAIL)}
+    assert {"person_and_leak_osint", "hudsonrock", "hibp"} <= email_ids
+
 
 @pytest.mark.asyncio
 async def test_phone_and_crypto_osint_investigation(container: AppContainer) -> None:

@@ -71,6 +71,17 @@ def get_eye_of_horus_banner(version: str = "1.0.0") -> str:
     )
 
 
+def render_compact_header(console: Console | None = None, version: str = "1.0.0") -> None:
+    """Render a minimalist, elegant single-line header for interactive sessions."""
+    configure_terminal_utf8()
+    target_console = console or Console()
+    target_console.print(
+        f"[bold gold1]{EYE_OF_HORUS_GLYPH} GOD'S EYE[/bold gold1] [dim]v{version}[/dim] "
+        f"[cyan]•[/cyan] [dim]OSINT & Threat Intelligence Console[/dim] "
+        f"[cyan]•[/cyan] [dim]Digite [bold cyan]scan <alvo>[/bold cyan] ou [bold cyan]help[/bold cyan][/dim]"
+    )
+
+
 def render_banner(console: Console | None = None, version: str = "1.0.0") -> None:
     """Render the stylized Eye of Horus banner to the terminal using Rich."""
     configure_terminal_utf8()

@@ -123,6 +123,7 @@ RAW_GLOBAL_100: list[tuple[str, str, str, str, str, str, str, list[TargetType], 
     ("arkham", "Arkham Intelligence", "https://platform.arkhamintelligence.com/", "Cripto OSINT", "Atribuição de entidades, exchanges e fluxo de carteiras", "Freemium", "required_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_CLUSTER, EntityType.CRYPTO_WALLET]),
     ("whale_alert", "Whale Alert", "https://whale-alert.io/", "Cripto OSINT", "Monitoramento de grandes transferências on-chain em tempo real", "Freemium", "required_key", [TargetType.CRYPTO_ADDRESS], [EntityType.CRYPTO_TRANSACTION]),
     ("cryptoscamdb", "CryptoScamDB", "https://cryptoscamdb.org/", "Cripto OSINT", "Endereços cripto e domínios associados a golpes reportados", "Gratuito", "none", [TargetType.CRYPTO_ADDRESS, TargetType.DOMAIN], [EntityType.SANCTION]),
+    ("person_and_leak_osint", "Public Person & Leak Intelligence", "https://api.github.com/search/users", "Pessoas/Vazamentos", "Busca pública de nomes no GitHub e Wikipedia, e checagem de vazamentos via XposedOrNot", "Gratuito", "none", [TargetType.PERSON, TargetType.EMAIL], [EntityType.ACCOUNT, EntityType.PERSON, EntityType.DOCUMENT, EntityType.BREACH]),
 ]
 
 # Brazilian OSINT catalog from `apis-osint-brasil.md`

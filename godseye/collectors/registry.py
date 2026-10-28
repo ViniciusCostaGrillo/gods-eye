@@ -17,6 +17,7 @@ from godseye.collectors.expansion_sources import (
     HudsonRockCollector,
     ImageExifMediaCollector,
     PhoneOsintCollector,
+    PublicPersonAndLeakCollector,
     UsernameSocmintCollector,
 )
 from godseye.collectors.global_sources import (
@@ -81,6 +82,7 @@ class CollectorRegistry:
             HudsonRockCollector,
             ImageExifMediaCollector,
             UsernameSocmintCollector,
+            PublicPersonAndLeakCollector,
         ]
         for cls in adapter_classes:
             instance = cls(

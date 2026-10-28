@@ -301,22 +301,21 @@ class HudsonRockCollector(BaseCollector):
             )
             data = resp.json()
         except Exception:
-            if not self.offline_fallback:
-                return
-            data = {
-                "message": "Metadata exposure assessment completed (no raw credentials stored)",
-                "stealers_count": 0,
-                "target": val,
-                "_fallback": True,
-            }
+            # Never fabricate exposure data on API failure
+            return
 
         # Section 6.3 mandatory rule: store only metadata, never raw dumps or passwords
         stealers = data.get("stealers") or []
+        stealer_count = len(stealers) if isinstance(stealers, list) else 0
+        corp_services = int(data.get("total_corporate_services") or 0)
+        user_services = int(data.get("total_user_services") or 0)
+        if stealer_count == 0 and corp_services == 0 and user_services == 0:
+            return  # Nothing leaked: report nothing
         summary_payload = {
             "target": val,
-            "stealers_records_count": len(stealers) if isinstance(stealers, list) else 0,
-            "total_corporate_services": data.get("total_corporate_services", 0),
-            "total_user_services": data.get("total_user_services", 0),
+            "stealers_records_count": stealer_count,
+            "total_corporate_services": corp_services,
+            "total_user_services": user_services,
             "compliance_policy": "METADATA_ONLY_NO_RAW_DUMPS_OR_PASSWORDS",
         }
         yield self.make_observation(
@@ -401,6 +400,8 @@ class UsernameSocmintCollector(BaseCollector):
         ("Dev.to", "https://dev.to/api/users/by_username?url={u}", "https://dev.to/{u}"),
         ("DockerHub", "https://hub.docker.com/v2/users/{u}/", "https://hub.docker.com/u/{u}"),
         ("Chess.com", "https://api.chess.com/pub/player/{u}", "https://www.chess.com/member/{u}"),
+        ("Crates.io", "https://crates.io/api/v1/users/{u}", "https://crates.io/users/{u}"),
+        ("Mastodon", "https://mastodon.social/api/v1/accounts/lookup?acct={u}", "https://mastodon.social/@{u}"),
     )
 
     async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
@@ -431,14 +432,21 @@ class UsernameSocmintCollector(BaseCollector):
                     ):
                         return None
                     data = data["data"]
-                elif platform_name == "HackerNews" and (not isinstance(data, dict) or not data.get("id")):
-                    return None
-                elif platform_name in {"Dev.to", "DockerHub"} and (
-                    not isinstance(data, dict) or not data.get("username") or not data.get("id")
-                ):
-                    return None
-                elif platform_name == "Chess.com" and (
-                    not isinstance(data, dict) or not data.get("username") or not data.get("player_id")
+                elif platform_name == "HackerNews":
+                    if not isinstance(data, dict) or not data.get("id"):
+                        return None
+                elif platform_name in {"Dev.to", "DockerHub"}:
+                    if not isinstance(data, dict) or not data.get("username") or not data.get("id"):
+                        return None
+                elif platform_name == "Chess.com":
+                    if not isinstance(data, dict) or not data.get("username") or not data.get("player_id"):
+                        return None
+                elif platform_name == "Crates.io":
+                    if not isinstance(data, dict) or not isinstance(data.get("user"), dict) or not data["user"].get("login"):
+                        return None
+                    data = data["user"]
+                elif platform_name == "Mastodon" and (
+                    not isinstance(data, dict) or not data.get("id") or not data.get("username")
                 ):
                     return None
 
@@ -448,7 +456,7 @@ class UsernameSocmintCollector(BaseCollector):
                     "profile_url": profile_url,
                 }
                 if isinstance(data, dict):
-                    for k in ("name", "bio", "company", "location", "created_at", "karma", "title", "total_karma"):
+                    for k in ("name", "display_name", "bio", "company", "location", "created_at", "karma", "title", "total_karma", "followers_count"):
                         if data.get(k):
                             summary_info[k] = data[k]
                 elif isinstance(data, list) and data and isinstance(data[0], dict):
@@ -477,6 +485,210 @@ class UsernameSocmintCollector(BaseCollector):
         for res in results:
             if isinstance(res, RawObservation):
                 yield res
+
+
+def _name_tokens(name: str) -> set[str]:
+    """Accent-insensitive significant name tokens (ignores particles like 'da', 'de', 'dos')."""
+    import unicodedata
+
+    norm = unicodedata.normalize("NFKD", name.lower())
+    norm = "".join(c for c in norm if not unicodedata.combining(c))
+    particles = {"da", "de", "do", "das", "dos", "e", "van", "von", "del", "la"}
+    return {t for t in re.split(r"[^a-z0-9]+", norm) if len(t) > 1 and t not in particles}
+
+
+class PublicPersonAndLeakCollector(BaseCollector):
+    """High-Precision Public Person & Email Leak Collector (GitHub User Search, Wikipedia, XposedOrNot)."""
+
+    id = "person_and_leak_osint"
+    name = "Public Person & Leak Intelligence (GitHub Search / XposedOrNot / Wikipedia)"
+    accepts = {TargetType.PERSON, TargetType.EMAIL}
+    produces = {EntityType.ACCOUNT, EntityType.PERSON, EntityType.DOCUMENT, EntityType.BREACH}
+    trust_level = TrustLevel.HIGH
+    requires_auth = False
+    rate_limit = 30
+    region = "global"
+
+    async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
+        val = target.normalized_value.strip()
+
+        if target.type == TargetType.PERSON:
+            # 1. Search GitHub public profiles by full name
+            gh_search_url = "https://api.github.com/search/users"
+            try:
+                resp = await self.http_client.fetch_with_retry(
+                    self.id,
+                    gh_search_url,
+                    params={"q": f'"{val}" in:fullname', "per_page": 5},
+                    headers={"Accept": "application/vnd.github+json"},
+                    max_retries=0,
+                )
+                gh_data = resp.json()
+                items = gh_data.get("items") if isinstance(gh_data, dict) else []
+                wanted = _name_tokens(val)
+                if isinstance(items, list):
+                    for item in items[:6]:
+                        if not isinstance(item, dict) or not item.get("login"):
+                            continue
+                        login = str(item["login"])
+                        # Precision gate: fetch profile & require every name token in the real display name
+                        try:
+                            prof_resp = await self.http_client.fetch_with_retry(
+                                self.id,
+                                f"https://api.github.com/users/{login}",
+                                headers={"Accept": "application/vnd.github+json"},
+                                max_retries=0,
+                            )
+                            prof = prof_resp.json()
+                        except Exception:
+                            continue
+                        real_name = str((prof or {}).get("name") or "")
+                        if not wanted or not wanted.issubset(_name_tokens(real_name)):
+                            continue
+                        html_url = str(item.get("html_url") or f"https://github.com/{login}")
+                        yield self.make_observation(
+                            entity_type=EntityType.ACCOUNT,
+                            entity_value=f"GitHub:{login} ({html_url})",
+                            raw_payload={
+                                "platform": "GitHub",
+                                "login": login,
+                                "id": item.get("id"),
+                                "profile_url": html_url,
+                                "name": real_name,
+                                "location": prof.get("location"),
+                                "company": prof.get("company"),
+                                "matched_person_name": val,
+                            },
+                            source_url=html_url,
+                            confidence=0.86,
+                            verification_status=VerificationStatus.UNVERIFIED_LEAD,
+                            related_to_value=val,
+                            related_to_type=EntityType.PERSON,
+                            relation=RelationType.ASSOCIATED_WITH,
+                            tags=["person-osint", "github-search", "account-discovery"],
+                        )
+            except Exception:
+                pass
+
+            # 2. Search Wikipedia public encyclopedic records (PT & EN)
+            for lang in ("pt", "en"):
+                wiki_url = f"https://{lang}.wikipedia.org/w/api.php"
+                try:
+                    w_resp = await self.http_client.fetch_with_retry(
+                        self.id,
+                        wiki_url,
+                        params={
+                            "action": "query",
+                            "list": "search",
+                            "srsearch": f'"{val}"',
+                            "format": "json",
+                            "srlimit": 2,
+                        },
+                        max_retries=0,
+                    )
+                    w_data = w_resp.json()
+                    search_hits = ((w_data.get("query") or {}).get("search")) or []
+                    for hit in search_hits[:1]:
+                        if not isinstance(hit, dict) or not hit.get("title"):
+                            continue
+                        title = str(hit["title"])
+                        # Only include if the person's name tokens match the title
+                        name_tokens = [t.lower() for t in val.split() if len(t) > 2]
+                        if name_tokens and all(tok in title.lower() for tok in name_tokens[:2]):
+                            snippet = re.sub(r"<[^>]+>", "", str(hit.get("snippet") or "")).strip()
+                            page_url = f"https://{lang}.wikipedia.org/wiki/{title.replace(' ', '_')}"
+                            yield self.make_observation(
+                                entity_type=EntityType.DOCUMENT,
+                                entity_value=f"Wikipedia ({lang.upper()}): {title} ({page_url})",
+                                raw_payload={
+                                    "title": title,
+                                    "summary": snippet,
+                                    "profile_url": page_url,
+                                    "language": lang,
+                                },
+                                source_url=page_url,
+                                confidence=0.88,
+                                verification_status=VerificationStatus.VERIFIED,
+                                related_to_value=val,
+                                related_to_type=EntityType.PERSON,
+                                relation=RelationType.MENTIONED_IN,
+                                tags=["person-osint", "wikipedia", "public-record"],
+                            )
+                            break
+                except Exception:
+                    pass
+
+        elif target.type == TargetType.EMAIL:
+            # 1. XposedOrNot free zero-key breach check for email
+            xon_url = f"https://api.xposedornot.com/v1/check-email/{val}"
+            try:
+                resp = await self.http_client.fetch_with_retry(self.id, xon_url, max_retries=0)
+                xon_data = resp.json()
+                if isinstance(xon_data, dict):
+                    raw_breaches = xon_data.get("breaches")
+                    breach_list: list[str] = []
+                    if isinstance(raw_breaches, list):
+                        for entry in raw_breaches:
+                            if isinstance(entry, list):
+                                breach_list.extend(str(x) for x in entry if x)
+                            elif isinstance(entry, str):
+                                breach_list.append(entry)
+                    for b_name in breach_list[:10]:
+                        yield self.make_observation(
+                            entity_type=EntityType.BREACH,
+                            entity_value=f"breach:{b_name}",
+                            raw_payload={
+                                "Name": b_name,
+                                "email": val,
+                                "source": "XposedOrNot",
+                                "profile_url": f"https://xposedornot.com/search?email={val}",
+                            },
+                            source_url="https://xposedornot.com/",
+                            confidence=0.93,
+                            verification_status=VerificationStatus.VERIFIED,
+                            related_to_value=val,
+                            related_to_type=EntityType.EMAIL,
+                            relation=RelationType.APPEARS_IN,
+                            tags=["xposedornot", "breach-exposure", "leaked-data"],
+                        )
+            except Exception:
+                pass
+
+            # 2. GitHub user search by public email
+            gh_email_url = "https://api.github.com/search/users"
+            try:
+                gh_resp = await self.http_client.fetch_with_retry(
+                    self.id,
+                    gh_email_url,
+                    params={"q": f"{val} in:email", "per_page": 3},
+                    headers={"Accept": "application/vnd.github+json"},
+                    max_retries=0,
+                )
+                gh_items = (gh_resp.json() or {}).get("items") or []
+                if isinstance(gh_items, list):
+                    for item in gh_items[:3]:
+                        if isinstance(item, dict) and item.get("login"):
+                            login = str(item["login"])
+                            html_url = str(item.get("html_url") or f"https://github.com/{login}")
+                            yield self.make_observation(
+                                entity_type=EntityType.ACCOUNT,
+                                entity_value=f"GitHub:{login} ({html_url})",
+                                raw_payload={
+                                    "platform": "GitHub",
+                                    "login": login,
+                                    "profile_url": html_url,
+                                    "matched_email": val,
+                                },
+                                source_url=html_url,
+                                confidence=0.92,
+                                verification_status=VerificationStatus.VERIFIED,
+                                related_to_value=val,
+                                related_to_type=EntityType.EMAIL,
+                                relation=RelationType.USES,
+                                tags=["github", "email-pivot", "socmint"],
+                            )
+            except Exception:
+                pass
 
 
 # --- Section 4: OSINT Brazuca Dynamic Catalog Importer ---

@@ -209,12 +209,12 @@ class QueridoDiarioCollector(BaseCollector):
             resp = await self.http_client.fetch_with_retry(
                 self.id,
                 url,
-                params={"querystring": query_str, "size": 3},
+                params={"querystring": f'"{query_str}"' if target.type == TargetType.PERSON else query_str, "size": 3},
                 max_retries=1,
             )
             gazettes = resp.json().get("gazettes", [])
         except Exception:
-            if self.offline_fallback:
+            if self.offline_fallback and target.type != TargetType.PERSON:
                 gazettes = [
                     {
                         "territory_name": "São Paulo",
@@ -227,6 +227,10 @@ class QueridoDiarioCollector(BaseCollector):
 
         for gz in gazettes[:3]:
             if not isinstance(gz, dict):
+                continue
+            excerpts = gz.get("excerpts") or []
+            excerpt_text = " ".join(str(x) for x in excerpts).lower()
+            if target.type == TargetType.PERSON and query_str.lower() not in excerpt_text:
                 continue
             territory = gz.get("territory_name", "Município")
             uf = gz.get("state_code", "BR")

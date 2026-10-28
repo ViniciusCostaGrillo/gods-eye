@@ -327,6 +327,24 @@ class InvestigationOrchestrator:
                     )
                     cascaded.append(cep_target)
 
+            # 4. Person Name -> Discovered GitHub / Social Username handles (up to top 2)
+            if parent_target.type == TargetType.PERSON and obs.entity_type == EntityType.ACCOUNT:
+                gh_login = str(obs.raw_payload.get("login") or "").strip()
+                if gh_login and len(cascaded) < 2:
+                    user_target = self.case_service.add_target(
+                        case_id, gh_login, TargetType.USERNAME, actor_id=actor_id, actor_role=actor_role
+                    )
+                    cascaded.append(user_target)
+
+            # 5. Username -> Public Commit Email -> Breach / Leak Check
+            if parent_target.type == TargetType.USERNAME and obs.entity_type == EntityType.EMAIL:
+                pub_email = str(obs.entity_value or "").strip().lower()
+                if "@" in pub_email and len(cascaded) < 3:
+                    email_target = self.case_service.add_target(
+                        case_id, pub_email, TargetType.EMAIL, actor_id=actor_id, actor_role=actor_role
+                    )
+                    cascaded.append(email_target)
+
         return cascaded
 
     async def _publish_observation_watchlist_events(

@@ -443,28 +443,90 @@ class GitHubOsintCollector(BaseCollector):
             return
 
         if isinstance(data, dict) and data.get("login") and data.get("id"):
-            profile_url = str(data.get("html_url", f"https://github.com/{data['login']}"))
+            login_str = str(data["login"])
+            profile_url = str(data.get("html_url", f"https://github.com/{login_str}"))
+            payload_info: dict[str, Any] = {
+                "platform": "GitHub",
+                "login": login_str,
+                "id": data.get("id"),
+                "profile_url": profile_url,
+                "html_url": profile_url,
+                "name": data.get("name"),
+                "bio": data.get("bio"),
+                "company": data.get("company"),
+                "blog": data.get("blog"),
+                "location": data.get("location"),
+                "twitter_username": data.get("twitter_username"),
+                "public_repos": data.get("public_repos"),
+                "followers": data.get("followers"),
+                "following": data.get("following"),
+                "created_at": data.get("created_at"),
+            }
+            # Inspect public events for public commit emails & active repositories
+            discovered_emails: set[str] = set()
+            active_repos: list[str] = []
+            try:
+                ev_url = f"https://api.github.com/users/{login_str}/events/public?per_page=15"
+                ev_resp = await self.http_client.fetch_with_retry(self.id, ev_url, headers=headers, max_retries=0)
+                events = ev_resp.json()
+                if isinstance(events, list):
+                    for ev in events:
+                        if not isinstance(ev, dict):
+                            continue
+                        repo_name = (ev.get("repo") or {}).get("name")
+                        if repo_name and repo_name not in active_repos and len(active_repos) < 4:
+                            active_repos.append(str(repo_name))
+                        commits = (ev.get("payload") or {}).get("commits") or []
+                        for c in commits:
+                            if isinstance(c, dict):
+                                author_email = str((c.get("author") or {}).get("email") or "").strip().lower()
+                                if (
+                                    author_email
+                                    and "@" in author_email
+                                    and "noreply.github.com" not in author_email
+                                    and not author_email.endswith(".local")
+                                ):
+                                    discovered_emails.add(author_email)
+            except Exception:
+                pass
+
+            if active_repos:
+                payload_info["recent_repos"] = active_repos
+            if discovered_emails:
+                payload_info["public_commit_emails"] = sorted(discovered_emails)
+
             # Per Section 5.4: Username matches are treated as leads (`UNVERIFIED_LEAD`), not definitive ID
             yield self.make_observation(
                 entity_type=EntityType.ACCOUNT,
-                entity_value=f"github:{data['login']} ({profile_url})",
-                raw_payload={
-                    "login": data.get("login"),
-                    "id": data.get("id"),
-                    "html_url": profile_url,
-                    "name": data.get("name"),
-                    "company": data.get("company"),
-                    "location": data.get("location"),
-                    "public_repos": data.get("public_repos"),
-                },
+                entity_value=f"GitHub:{login_str} ({profile_url})",
+                raw_payload=payload_info,
                 source_url=profile_url,
-                confidence=0.85,
+                confidence=0.88,
                 verification_status=VerificationStatus.UNVERIFIED_LEAD,
                 related_to_value=username,
                 related_to_type=EntityType.ACCOUNT,
                 relation=RelationType.ASSOCIATED_WITH,
                 tags=["github", "socmint", "username-lead"],
             )
+
+            for pub_email in sorted(discovered_emails)[:3]:
+                yield self.make_observation(
+                    entity_type=EntityType.EMAIL,
+                    entity_value=pub_email,
+                    raw_payload={
+                        "email": pub_email,
+                        "source": "github_public_commits",
+                        "github_login": login_str,
+                        "profile_url": profile_url,
+                    },
+                    source_url=profile_url,
+                    confidence=0.90,
+                    verification_status=VerificationStatus.VERIFIED,
+                    related_to_value=f"GitHub:{login_str} ({profile_url})",
+                    related_to_type=EntityType.ACCOUNT,
+                    relation=RelationType.USES,
+                    tags=["github", "commit-email", "osint-pivot"],
+                )
 
 
 class GravatarCollector(BaseCollector):
@@ -529,7 +591,7 @@ class KeybaseCollector(BaseCollector):
                 yield self.make_observation(
                     entity_type=EntityType.ACCOUNT,
                     entity_value=f"keybase:{kb_user}",
-                    raw_payload={"username": kb_user, "id": them.get("id")},
+                    raw_payload={"platform": "Keybase", "username": kb_user, "id": them.get("id"), "profile_url": f"https://keybase.io/{kb_user}"},
                     source_url=f"https://keybase.io/{kb_user}",
                     confidence=0.80,
                     verification_status=VerificationStatus.UNVERIFIED_LEAD,
@@ -625,26 +687,7 @@ class HibpMetadataCollector(BaseCollector):
                     relation=RelationType.APPEARS_IN,
                     tags=["hibp", "breach-catalog"],
                 )
-        elif self.offline_fallback and target.type == TargetType.EMAIL:
-            # Provide simulated breach exposure metadata for demonstration/testing if no key is configured
-            for demo_breach, breach_date in [("linkedin-2021", "2021-06-22"), ("collection-metadata-index", "2023-03-10")]:
-                yield self.make_observation(
-                    entity_type=EntityType.BREACH,
-                    entity_value=f"breach:{demo_breach}",
-                    raw_payload={
-                        "Name": demo_breach,
-                        "BreachDate": breach_date,
-                        "DataClasses": ["Email addresses", "Job titles", "Social media profiles"],
-                        "Mode": "metadata_assessment_only_no_credentials",
-                    },
-                    source_url="https://haveibeenpwned.com/API/v3",
-                    confidence=0.78,
-                    verification_status=VerificationStatus.CORROBORATED,
-                    related_to_value=val,
-                    related_to_type=EntityType.EMAIL,
-                    relation=RelationType.APPEARS_IN,
-                    tags=["hibp", "breach-exposure"],
-                )
+        # Never fabricate breach records: if nothing real is found, emit nothing.
 
 
 class UrlscanCollector(BaseCollector):

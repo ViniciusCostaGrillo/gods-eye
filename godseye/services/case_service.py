@@ -32,6 +32,7 @@ TRON_ADDR_RE = re.compile(r"^T[a-zA-HJ-NP-Z0-9]{33}$")
 PHONE_INTL_RE = re.compile(r"^\+\d{10,15}$")
 PHONE_BR_FMT_RE = re.compile(r"^\(?\d{2}\)?\s*9?\d{4}-?\d{4}$")
 IMAGE_EXT_RE = re.compile(r".+\.(?:png|jpg|jpeg|webp|gif|tiff|bmp)$", re.IGNORECASE)
+CPF_RE = re.compile(r"^\d{3}\.\d{3}\.\d{3}-\d{2}$")
 DOMAIN_RE = re.compile(r"^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$")
 
 
@@ -53,24 +54,31 @@ def detect_target_type(raw_value: str) -> TargetType:
     if IMAGE_EXT_RE.match(val):
         return TargetType.IMAGE
 
+    if CPF_RE.match(val):
+        return TargetType.PERSON
+
     if PHONE_INTL_RE.match(re.sub(r"[\s()-]", "", val)) or (
         PHONE_BR_FMT_RE.match(val) and ("(" in val or "-" in val or " " in val or val.startswith("+"))
     ):
         return TargetType.PHONE
 
     digits = re.sub(r"\D", "", val)
-    if CNPJ_RE.match(val) or len(digits) == 14:
+    if CNPJ_RE.match(val) or (len(digits) == 14 and digits.isdigit()):
         return TargetType.CNPJ
-    if CNJ_PROCESSO_RE.match(val) or len(digits) == 20:
+    if CNJ_PROCESSO_RE.match(val) or (len(digits) == 20 and digits.isdigit()):
         return TargetType.PROCESSO
-    if CEP_RE.match(val) or len(digits) == 8:
+    if CEP_RE.match(val) or (len(digits) == 8 and digits.isdigit()):
         return TargetType.CEP
-    if len(digits) in (10, 11) and digits.isdigit():
+    if len(digits) in (10, 11, 12, 13) and digits.isdigit() and len(val.replace(" ", "").replace("-", "")) <= 15:
         return TargetType.PHONE
     if BR_PLATE_RE.match(val):
         return TargetType.VEHICLE_PLATE
     if DOMAIN_RE.match(val.lower()):
         return TargetType.DOMAIN
+    # Multi-word alphabetic string (e.g. "Linus Torvalds", "Vinicius Costa") -> Person
+    words = [w for w in val.split() if any(ch.isalpha() for ch in w)]
+    if " " in val and len(words) >= 2:
+        return TargetType.PERSON
     return TargetType.USERNAME
 
 

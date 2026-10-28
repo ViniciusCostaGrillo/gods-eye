@@ -47,7 +47,7 @@ class BaseCollector(ABC):
     trust_level: TrustLevel = TrustLevel.HIGH
     requires_auth: bool = False
     rate_limit: int = 30
-    adapter_version: str = "1.0.0"
+    adapter_version: str = "2.0.0"
     region: str = "global"
 
     def __init__(
