@@ -2,7 +2,6 @@
 
 import asyncio
 import shlex
-import sys
 from pathlib import Path
 
 import typer
@@ -154,8 +153,6 @@ def main_callback(
     if ctx.invoked_subcommand is None:
         render_banner(console)
         _display_quick_help()
-        if sys.stdin is not None and sys.stdin.isatty():
-            _run_interactive_menu()
 
 
 @app.command("banner")
