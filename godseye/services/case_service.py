@@ -4,6 +4,7 @@ import ipaddress
 import re
 from typing import Any
 
+from godseye.collectors.brazil_sources import is_valid_cpf
 from godseye.collectors.expansion_sources import parse_e164_phone
 from godseye.core.security import (
     check_permission,
@@ -57,12 +58,15 @@ def detect_target_type(raw_value: str) -> TargetType:
     if CPF_RE.match(val):
         return TargetType.PERSON
 
+    digits = re.sub(r"\D", "", val)
+    if len(digits) == 11 and digits.isdigit() and is_valid_cpf(digits) and not val.startswith("+") and "(" not in val:
+        return TargetType.PERSON
+
     if PHONE_INTL_RE.match(re.sub(r"[\s()-]", "", val)) or (
         PHONE_BR_FMT_RE.match(val) and ("(" in val or "-" in val or " " in val or val.startswith("+"))
     ):
         return TargetType.PHONE
 
-    digits = re.sub(r"\D", "", val)
     if CNPJ_RE.match(val) or (len(digits) == 14 and digits.isdigit()):
         return TargetType.CNPJ
     if CNJ_PROCESSO_RE.match(val) or (len(digits) == 20 and digits.isdigit()):
@@ -98,6 +102,11 @@ def normalize_target_value(target_type: TargetType, raw_value: str) -> str:
             return f"{mask_plate(val)}#{hash_sensitive_identifier(val)[:10]}"
         case TargetType.USERNAME:
             return val.lstrip("@").strip()
+        case TargetType.PERSON:
+            d = re.sub(r"\D", "", val)
+            if len(d) == 11 and not any(c.isalpha() for c in val):
+                return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:]}"
+            return val
         case _:
             return val
 

@@ -47,11 +47,28 @@ def test_target_detection_and_normalization_expansion() -> None:
     # Image file target
     assert detect_target_type("suspect_photo.jpg") == TargetType.IMAGE
 
-    # Person full names & usernames
+    # Person full names & usernames & CPF
     assert detect_target_type("Linus Torvalds") == TargetType.PERSON
     assert detect_target_type("João da Silva") == TargetType.PERSON
+    assert detect_target_type("529.982.247-25") == TargetType.PERSON
+    assert detect_target_type("52998224725") == TargetType.PERSON
+    assert normalize_target_value(TargetType.PERSON, "52998224725") == "529.982.247-25"
     assert detect_target_type("torvalds") == TargetType.USERNAME
     assert detect_target_type("11988887777") == TargetType.PHONE
+
+    from godseye.collectors.brazil_sources import analyze_cpf, extract_names_near_cpf, is_valid_cpf
+
+    assert is_valid_cpf("529.982.247-25") is True
+    assert is_valid_cpf("111.111.111-11") is False
+    cpf_meta = analyze_cpf("52998224725")
+    assert cpf_meta["is_valid"] is True
+    assert "ES" in cpf_meta["states"] and "RJ" in cpf_meta["states"]
+    extracted = extract_names_near_cpf(
+        "Nomeação de CARLOS EDUARDO DA SILVA, inscrito no CPF sob nº 529.982.247-25, para o cargo.",
+        "529.982.247-25",
+        "52998224725",
+    )
+    assert "Carlos Eduardo da Silva" in extracted
 
 
 def test_collectors_never_fabricate_on_failure(container: AppContainer) -> None:

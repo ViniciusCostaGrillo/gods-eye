@@ -280,6 +280,7 @@ def _render_scan_report(
     # Collect observations from evidence to display rich, non-truncated metadata
     all_evidence = container.repo.list_evidence(case.id)
     accounts: list[dict[str, Any]] = []
+    cpf_analyses: list[dict[str, Any]] = []
     locations: list[dict[str, Any]] = []
     organizations: list[dict[str, Any]] = []
     breaches: list[dict[str, Any]] = []
@@ -290,13 +291,16 @@ def _render_scan_report(
     seen_vals: set[str] = set()
     for ev in all_evidence:
         payload = ev.raw_payload or {}
-        val = str(ev.url or payload.get("profile_url") or payload.get("target") or ev.source_id)
-        dedup_key = f"{ev.source_id}:{val}"
+        val = str(ev.url or payload.get("profile_url") or payload.get("cpf_formatted") or payload.get("target") or ev.source_id)
+        dedup_key = f"{ev.source_id}:{val}:{payload.get('is_cpf_analysis', False)}"
         if dedup_key in seen_vals:
             continue
         seen_vals.add(dedup_key)
 
-        if ev.source_id in {"github_osint", "socmint_username_matrix", "person_and_leak_osint", "keybase", "gravatar"}:
+        if ev.source_id == "brasil_cpf":
+            if payload.get("is_cpf_analysis"):
+                cpf_analyses.append(payload)
+        elif ev.source_id in {"github_osint", "socmint_username_matrix", "person_and_leak_osint", "keybase", "gravatar"}:
             if payload.get("source") == "XposedOrNot" or "Name" in payload:
                 breaches.append(payload)
             elif "title" in payload and "language" in payload:
@@ -317,6 +321,64 @@ def _render_scan_report(
             network_hosts.append(payload)
         elif ev.source_id in {"crypto_osint"}:
             cryptos.append(payload)
+
+    # --- Render Section: Análise de CPF & Registros Públicos (Brasil) ---
+    if cpf_analyses:
+        console.print(
+            f"\n[bold gold1]{EYE_OF_HORUS_GLYPH} ANÁLISE DE CPF & REGISTROS PÚBLICOS (RECEITA FEDERAL / TRANSPARÊNCIA)[/bold gold1]"
+        )
+        console.rule(style="dim cyan")
+        for cpf_data in cpf_analyses:
+            cpf_fmt = target.normalized_value if "." in target.normalized_value else cpf_data.get("cpf_formatted", "-")
+            cpf_msk = cpf_data.get("cpf_masked", "-")
+            is_val = cpf_data.get("is_valid", False)
+            status_badge = (
+                "[bold green]✔ VÁLIDO (Dígitos verificadores Módulo 11 confirmados)[/bold green]"
+                if is_val
+                else "[bold bright_red]✖ INVÁLIDO (Dígitos verificadores incorretos)[/bold bright_red]"
+            )
+            fisc_reg = cpf_data.get("fiscal_region", "-")
+            uf_list = ", ".join(cpf_data.get("states") or [])
+            console.print(f"  ● [bold cyan]CPF:[/bold cyan] [bold bright_white]{cpf_fmt}[/bold bright_white] [dim](Máscara LGPD: {cpf_msk})[/dim]")
+            console.print(f"        Status Matemático RFB: {status_badge}", overflow="fold")
+            console.print(
+                f"        Região Fiscal de Emissão (9º Dígito): [bold white]{fisc_reg}[/bold white] [cyan](UF: {uf_list})[/cyan]",
+                overflow="fold",
+            )
+            disc_names = cpf_data.get("discovered_names") or []
+            srv_recs = cpf_data.get("servidor_records") or []
+            mentions = cpf_data.get("public_mentions") or []
+            if disc_names:
+                console.print(
+                    f"        [bold green]Titular / Nome(s) Localizado(s) em Atos Públicos:[/bold green] [bold bright_white]{', '.join(disc_names)}[/bold bright_white]",
+                    overflow="fold",
+                )
+            else:
+                console.print(
+                    "        [yellow]Titular / Nome Civil:[/yellow] Não exposto em Diários Oficiais/Editais abertos para este CPF.",
+                    overflow="fold",
+                )
+                console.print(
+                    "        [dim]↳ Nota Técnica (LGPD / RFB): O cadastro privado da Receita Federal possui sigilo legal. "
+                    "Fontes abertas só exibem o nome quando o CPF foi publicado em Diário Oficial, Concurso, Licitação "
+                    "ou Portal da Transparência. Dica: busque também pelo Nome Completo (scan \"Nome Sobrenome\") ou "
+                    "adicione GODSEYE_PORTAL_TRANSPARENCIA_API_KEY no arquivo .env.[/dim]",
+                    overflow="fold",
+                )
+            for srv in srv_recs:
+                console.print(
+                    f"        ↳ [bold green]Vínculo Federal:[/bold green] {srv.get('nome')} — {srv.get('orgao')}",
+                    overflow="fold",
+                )
+            if mentions:
+                console.print(f"\n        [bold cyan]Publicações Oficiais & Documentos Encontrados ({len(mentions)}):[/bold cyan]")
+                for m in mentions:
+                    console.print(f"          • [bold white]{m.get('source')}[/bold white]", overflow="fold")
+                    if m.get("url"):
+                        console.print(f"            ↳ [bright_blue underline]{m.get('url')}[/bright_blue underline]", overflow="fold")
+                    if m.get("snippet"):
+                        console.print(f"              [dim]{m.get('snippet')}[/dim]", overflow="fold")
+        console.print()
 
     # --- Render Section: Contas & Presença em Redes / SOCMINT (block layout, full URLs) ---
     merged: dict[str, dict[str, Any]] = {}
@@ -477,7 +539,7 @@ def _render_scan_report(
         console.print()
 
     # If no specialized cards had items, show standard entity overview
-    if not (accounts or locations or organizations or breaches or documents):
+    if not (accounts or locations or organizations or breaches or documents or cpf_analyses):
         ent_table = Table(
             title=f"{EYE_OF_HORUS_GLYPH} Entidades Descobertas ({len(entities)})",
             border_style="cyan",

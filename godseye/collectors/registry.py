@@ -6,6 +6,7 @@ from godseye.collectors.base import BaseCollector
 from godseye.collectors.brazil_sources import (
     BrasilApiCnpjCollector,
     BrasilCepCollector,
+    BrasilCpfOsintCollector,
     DataJudCnjCollector,
     PortalTransparenciaSanctionsCollector,
     QueridoDiarioCollector,
@@ -74,6 +75,7 @@ class CollectorRegistry:
             UrlscanCollector,
             BrasilApiCnpjCollector,
             BrasilCepCollector,
+            BrasilCpfOsintCollector,
             QueridoDiarioCollector,
             PortalTransparenciaSanctionsCollector,
             DataJudCnjCollector,

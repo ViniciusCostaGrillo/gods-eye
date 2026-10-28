@@ -163,7 +163,7 @@ def sanitize_osint_payload(payload: dict[str, Any]) -> dict[str, Any]:
         elif isinstance(value, str) and key_lower in {"cpf", "documento_cpf"}:
             sanitized[key] = mask_cpf(value)
         elif isinstance(value, str) and cpf_pattern.search(value) and key_lower != "cnpj":
-            sanitized[key] = cpf_pattern.sub(r"***.\\2.\\3-**", value)
+            sanitized[key] = cpf_pattern.sub(lambda m: f"***.{m.group(2)}.{m.group(3)}-**", value)
         else:
             sanitized[key] = value
     return sanitized

@@ -513,6 +513,8 @@ class PublicPersonAndLeakCollector(BaseCollector):
         val = target.normalized_value.strip()
 
         if target.type == TargetType.PERSON:
+            if len(re.sub(r"\D", "", val)) == 11 and not any(c.isalpha() for c in val):
+                return
             # 1. Search GitHub public profiles by full name
             gh_search_url = "https://api.github.com/search/users"
             try:
