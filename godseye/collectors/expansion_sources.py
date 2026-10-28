@@ -395,14 +395,12 @@ class UsernameSocmintCollector(BaseCollector):
     region = "global"
 
     PLATFORMS: tuple[tuple[str, str, str], ...] = (
-        ("GitHub", "https://api.github.com/users/{u}", "https://github.com/{u}"),
         ("GitLab", "https://gitlab.com/api/v4/users?username={u}", "https://gitlab.com/{u}"),
         ("Reddit", "https://www.reddit.com/user/{u}/about.json", "https://www.reddit.com/user/{u}"),
         ("HackerNews", "https://hacker-news.firebaseio.com/v0/user/{u}.json", "https://news.ycombinator.com/user?id={u}"),
         ("Dev.to", "https://dev.to/api/users/by_username?url={u}", "https://dev.to/{u}"),
         ("DockerHub", "https://hub.docker.com/v2/users/{u}/", "https://hub.docker.com/u/{u}"),
         ("Chess.com", "https://api.chess.com/pub/player/{u}", "https://www.chess.com/member/{u}"),
-        ("Keybase", "https://keybase.io/_/api/1.0/user/lookup.json?usernames={u}", "https://keybase.io/{u}"),
     )
 
     async def collect(self, target: Target) -> AsyncIterator[RawObservation]:
@@ -418,13 +416,30 @@ class UsernameSocmintCollector(BaseCollector):
                 data = resp.json()
                 if data is None:
                     return None
-                if platform_name == "GitLab" and (not isinstance(data, list) or len(data) == 0):
-                    return None
-                if platform_name == "Keybase":
-                    them = data.get("them") if isinstance(data, dict) else None
-                    if not them or not isinstance(them, list) or them[0] is None:
+
+                # Strict per-platform existence verification (no false positives)
+                if platform_name == "GitLab":
+                    if not isinstance(data, list) or len(data) == 0 or not isinstance(data[0], dict) or not data[0].get("username"):
                         return None
-                if platform_name == "Reddit" and isinstance(data, dict) and data.get("error"):
+                elif platform_name == "Reddit":
+                    if (
+                        not isinstance(data, dict)
+                        or data.get("kind") != "t2"
+                        or not isinstance(data.get("data"), dict)
+                        or not data["data"].get("name")
+                        or data["data"].get("is_suspended")
+                    ):
+                        return None
+                    data = data["data"]
+                elif platform_name == "HackerNews" and (not isinstance(data, dict) or not data.get("id")):
+                    return None
+                elif platform_name in {"Dev.to", "DockerHub"} and (
+                    not isinstance(data, dict) or not data.get("username") or not data.get("id")
+                ):
+                    return None
+                elif platform_name == "Chess.com" and (
+                    not isinstance(data, dict) or not data.get("username") or not data.get("player_id")
+                ):
                     return None
 
                 summary_info: dict[str, Any] = {
@@ -433,7 +448,7 @@ class UsernameSocmintCollector(BaseCollector):
                     "profile_url": profile_url,
                 }
                 if isinstance(data, dict):
-                    for k in ("name", "bio", "company", "location", "created_at", "karma", "title"):
+                    for k in ("name", "bio", "company", "location", "created_at", "karma", "title", "total_karma"):
                         if data.get(k):
                             summary_info[k] = data[k]
                 elif isinstance(data, list) and data and isinstance(data[0], dict):
@@ -445,7 +460,7 @@ class UsernameSocmintCollector(BaseCollector):
                     entity_value=f"{platform_name}:{handle} ({profile_url})",
                     raw_payload=summary_info,
                     source_url=profile_url,
-                    confidence=0.78,
+                    confidence=0.82,
                     verification_status=VerificationStatus.UNVERIFIED_LEAD,
                     related_to_value=handle,
                     related_to_type=EntityType.ACCOUNT,
@@ -459,30 +474,9 @@ class UsernameSocmintCollector(BaseCollector):
             *(_probe_platform(p_name, a_url, pr_url) for p_name, a_url, pr_url in self.PLATFORMS),
             return_exceptions=True,
         )
-        emitted = 0
         for res in results:
             if isinstance(res, RawObservation):
-                emitted += 1
                 yield res
-
-        if emitted == 0 and self.offline_fallback:
-            yield self.make_observation(
-                entity_type=EntityType.ACCOUNT,
-                entity_value=f"SOCMINT Lead:{handle} (https://github.com/{handle})",
-                raw_payload={
-                    "platform": "SOCMINT-Matrix",
-                    "username": handle,
-                    "profile_url": f"https://github.com/{handle}",
-                    "_fallback": True,
-                },
-                source_url=f"https://github.com/{handle}",
-                confidence=0.70,
-                verification_status=VerificationStatus.UNVERIFIED_LEAD,
-                related_to_value=handle,
-                related_to_type=EntityType.ACCOUNT,
-                relation=RelationType.ASSOCIATED_WITH,
-                tags=["socmint", "username-search"],
-            )
 
 
 # --- Section 4: OSINT Brazuca Dynamic Catalog Importer ---

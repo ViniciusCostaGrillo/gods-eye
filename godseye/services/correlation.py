@@ -85,7 +85,11 @@ class CorrelationEngine:
             new_findings.append(finding)
 
         # Rule 4: Cross-Platform Username Leads (Section 5.4: treat as leads, not definitive ID)
-        accounts = by_type.get(EntityType.ACCOUNT, [])
+        accounts = [
+            e.canonical_value
+            for e in entities
+            if e.type == EntityType.ACCOUNT and set(e.sources) != {"analyst_input"}
+        ]
         if accounts and "CORR-SOCMINT-LEADS" not in existing_rule_ids:
             finding = CorrelationFinding(
                 case_id=case_id,

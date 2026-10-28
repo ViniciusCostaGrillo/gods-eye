@@ -439,25 +439,18 @@ class GitHubOsintCollector(BaseCollector):
             )
             data: dict[str, Any] = resp.json()
         except Exception:
-            if not self.offline_fallback:
-                return
-            data = {
-                "login": username,
-                "html_url": f"https://github.com/{username}",
-                "name": username,
-                "company": None,
-                "public_repos": 5,
-                "_fallback": True,
-            }
+            # Never fabricate a non-existent GitHub user on 404 or API error
+            return
 
-        if data.get("login"):
-            profile_url = str(data.get("html_url", f"https://github.com/{username}"))
+        if isinstance(data, dict) and data.get("login") and data.get("id"):
+            profile_url = str(data.get("html_url", f"https://github.com/{data['login']}"))
             # Per Section 5.4: Username matches are treated as leads (`UNVERIFIED_LEAD`), not definitive ID
             yield self.make_observation(
                 entity_type=EntityType.ACCOUNT,
-                entity_value=f"github:{data['login']}",
+                entity_value=f"github:{data['login']} ({profile_url})",
                 raw_payload={
                     "login": data.get("login"),
+                    "id": data.get("id"),
                     "html_url": profile_url,
                     "name": data.get("name"),
                     "company": data.get("company"),
@@ -465,7 +458,7 @@ class GitHubOsintCollector(BaseCollector):
                     "public_repos": data.get("public_repos"),
                 },
                 source_url=profile_url,
-                confidence=0.75,
+                confidence=0.85,
                 verification_status=VerificationStatus.UNVERIFIED_LEAD,
                 related_to_value=username,
                 related_to_type=EntityType.ACCOUNT,
@@ -507,19 +500,8 @@ class GravatarCollector(BaseCollector):
                 tags=["gravatar", "email-identity"],
             )
         except Exception:
-            if self.offline_fallback:
-                yield self.make_observation(
-                    entity_type=EntityType.ACCOUNT,
-                    entity_value=f"gravatar-hash:{md5_hash[:12]}",
-                    raw_payload={"email_md5": md5_hash, "note": "Gravatar hash fingerprint computed"},
-                    source_url=url,
-                    confidence=0.60,
-                    verification_status=VerificationStatus.UNVERIFIED_LEAD,
-                    related_to_value=email,
-                    related_to_type=EntityType.EMAIL,
-                    relation=RelationType.USES,
-                    tags=["gravatar", "hash"],
-                )
+            # 404 on Gravatar means the email has no Gravatar profile; do not fabricate one
+            return
 
 
 class KeybaseCollector(BaseCollector):
