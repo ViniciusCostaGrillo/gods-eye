@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from godseye.collectors.registry import CollectorRegistry
+from godseye.core.bootstrap import ensure_zero_config_environment
 from godseye.core.cache import MultiTierCache
 from godseye.core.config import get_settings
 from godseye.core.resilience import ResilientHttpClient
@@ -119,6 +120,7 @@ class AppContainer:
     """Dependency container holding database, cache, HTTP client, and services."""
 
     def __init__(self, db_path: str | None = None) -> None:
+        ensure_zero_config_environment()
         settings = get_settings()
         resolved_db = db_path or settings.db_path
         self.repo = OsintRepository(resolved_db)
@@ -133,6 +135,7 @@ class AppContainer:
             cache=self.cache,
             offline_fallback=settings.offline_demo_fallback,
         )
+        self.registry.import_brazuca_catalog()
         self.event_bus = EventBus()
         self.case_service = CaseService(self.repo)
         self.orchestrator = InvestigationOrchestrator(

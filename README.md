@@ -86,102 +86,65 @@ flowchart TD
 
 ---
 
-## 3. Installation Guide (English)
+## 3. Zero-Config Installation Guide (English) — Ready to Use Out of the Box
 
-### 3.1 Windows (CMD & PowerShell)
+**God's Eye (`𓂀`) is 100% Zero-Config.** You do **not** need to manually create virtual environments, install packages, configure databases, or buy API keys. The launchers (`godseye.bat`, `godseye.ps1`, `godseye.sh`) and one-click installers (`install.bat`, `install.ps1`, `install.sh`) automatically bootstrap `.venv`, install dependencies, generate `.env`, initialize the SQLite WAL database (`~/.godseye/godseye.db`), and load all **140 OSINT sources** on first run!
 
-1. **Prerequisites**: Install [Python 3.11+](https://www.python.org/downloads/windows/) and [Git](https://git-scm.com/download/win).
-2. **Clone the repository**:
-   ```powershell
-   git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
-   cd gods-eye
-   ```
-3. **Create the virtual environment and install dependencies**:
-   ```powershell
-   py -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install --upgrade pip
-   .\.venv\Scripts\python.exe -m pip install fastapi uvicorn httpx pydantic pydantic-settings rich typer truststore pytest pytest-asyncio ruff mypy
-   ```
-4. **Run in Windows CMD (`cmd.exe`)**:
-   > `godseye.bat` automatically configures UTF-8 (`chcp 65001`) and Windows Virtual Terminal ANSI sequences so the **Eye of Horus (`𓂀`)** renders cleanly in CMD.
-   ```cmd
-   godseye.bat
-   godseye.bat scan example.com
-   godseye.bat scan 00.000.000/0001-91 --output dossier.md --format md
-   godseye.bat shell
-   ```
-5. **Run in Windows PowerShell (`pwsh` / `powershell.exe`)**:
-   ```powershell
-   .\godseye.ps1
-   .\godseye.ps1 scan sec-ops@example.com --depth 2
-   .\godseye.ps1 sources --region brasil
-   .\godseye.ps1 benchmark
-   ```
+### 3.1 Windows (CMD & PowerShell) — 1-Command Zero-Config
 
----
+```cmd
+git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
+cd gods-eye
 
-### 3.2 Linux (Ubuntu, Debian, Fedora, Arch)
+REM Option 1: Run immediately (auto-creates .venv & installs dependencies on first run!)
+godseye.bat
 
-1. **Install Python 3.11+ and venv**:
-   ```bash
-   # Ubuntu / Debian
-   sudo apt update && sudo apt install -y git python3 python3-venv python3-pip
-   ```
-2. **Clone and set up God's Eye**:
-   ```bash
-   git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
-   cd gods-eye
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -e .
-   chmod +x ./godseye.sh
-   ```
-3. **Run**:
-   ```bash
-   ./godseye.sh
-   ./godseye.sh scan example.com
-   # Or directly via the entry point inside the virtualenv:
-   godseye scan 93.184.216.34
-   ```
-
----
-
-### 3.3 🐉 Kali Linux (Penetration Testing & OSINT Workstation)
-
-Kali Linux enforces **PEP 668** (`externally-managed-environment`) on system Python packages. Follow the steps below to install **God's Eye (`𓂀`)** cleanly on Kali Linux as a global command (`godseye`) available from any terminal (`zsh` / `bash`):
-
-#### Option A: Isolated Virtualenv + Global Symlink (Recommended for Kali Linux)
-```bash
-# 1. Update packages and ensure python3-venv & fonts with Egyptian Hieroglyphs support are installed
-sudo apt update && sudo apt install -y git python3 python3-venv python3-pip fonts-noto-core
-
-# 2. Clone God's Eye to /opt/godseye (or ~/gods-eye)
-sudo git clone https://github.com/ViniciusCostaGrillo/gods-eye.git /opt/godseye
-sudo chown -R $USER:$USER /opt/godseye
-cd /opt/godseye
-
-# 3. Create isolated virtual environment & install package
-python3 -m venv .venv
-./.venv/bin/pip install --upgrade pip
-./.venv/bin/pip install -e .
-chmod +x /opt/godseye/godseye.sh
-
-# 4. Symlink to /usr/local/bin so `godseye` runs from anywhere in Kali
-sudo ln -sf /opt/godseye/godseye.sh /usr/local/bin/godseye
-
-# 5. Launch God's Eye in Kali Linux!
-godseye
+REM Option 2: Register 'godseye' globally in Windows User PATH so it works from any folder:
+install.bat
+godseye doctor
 godseye scan example.com
-godseye shell
 ```
 
-#### Option B: Using `pipx` on Kali Linux
+In **Windows PowerShell**:
+```powershell
+.\godseye.ps1
+# Or install globally into User PATH:
+.\install.ps1
+godseye scan 00.000.000/0001-91 --output dossier.md --format md
+```
+
+---
+
+### 3.2 Linux (Ubuntu, Debian, Fedora, Arch) — 1-Command Zero-Config
+
 ```bash
-sudo apt update && sudo apt install -y pipx fonts-noto-core
-pipx ensurepath
-pipx install git+https://github.com/ViniciusCostaGrillo/gods-eye.git
+git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
+cd gods-eye
+chmod +x install.sh godseye.sh
+./install.sh
+
+# Now run from any terminal directory:
+godseye
 godseye scan example.com
+```
+
+---
+
+### 3.3 🐉 Kali Linux (Penetration Testing & OSINT Workstation) — 1-Command Zero-Config
+
+On **Kali Linux**, `./install.sh` automatically handles **PEP 668** (`externally-managed-environment`) by creating an isolated `.venv`, installing `fonts-noto-core` (for the Egyptian Eye of Horus glyph `𓂀`), and linking `/usr/local/bin/godseye`:
+
+```bash
+git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
+cd gods-eye
+chmod +x install.sh godseye.sh
+./install.sh
+
+# Ready! Launch interactive menu or scan targets from anywhere in Kali Linux:
+godseye
+godseye menu
+godseye doctor
+godseye scan +5511999998888
 ```
 
 ---
@@ -238,110 +201,67 @@ Construído a partir das especificações de [`documentacao-backend-agregador-os
 
 ---
 
-## 2. Guia de Instalação Completo (Português)
+## 2. Guia de Instalação Zero-Config (Português) — Pronto para Uso sem Configurar Nada
 
-### 2.1 Instalação no Windows (CMD e PowerShell)
+O **God's Eye (`𓂀`)** foi projetado para ser **100% Zero-Config (*Turnkey*)**. Você **não precisa** criar ambientes virtuais manualmente, instalar pacotes um a um, criar banco de dados ou configurar chaves de API pagas:
+- Ao rodar `godseye.bat`, `.\godseye.ps1` ou `./godseye.sh` pela primeira vez, ele **cria o `.venv` e instala todas as dependências automaticamente**, gera o `.env` padrão, inicializa o banco SQLite WAL (`~/.godseye/godseye.db`), carrega as **140 fontes OSINT** (incluindo o catálogo **OSINT Brazuca**) e abre o **Menu Interativo Numerado (`[1]` a `[6]`)** onde basta colar o alvo para investigar!
+- Se rodar o instalador de 1 clique (`install.bat` / `install.ps1` no Windows ou `./install.sh` no Linux/Kali), o comando `godseye` também é adicionado automaticamente ao `PATH` do seu sistema para funcionar de qualquer pasta!
 
-1. **Pré-requisitos**: Instale o [Python 3.11+](https://www.python.org/downloads/windows/) e o [Git](https://git-scm.com/download/win).
-2. **Clone o repositório**:
-   ```powershell
-   git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
-   cd gods-eye
-   ```
-3. **Crie o ambiente virtual e instale as dependências**:
-   ```powershell
-   py -m venv .venv
-   .\.venv\Scripts\python.exe -m pip install --upgrade pip
-   .\.venv\Scripts\python.exe -m pip install fastapi uvicorn httpx pydantic pydantic-settings rich typer truststore pytest pytest-asyncio ruff mypy
-   ```
-4. **Executando no Prompt de Comando (`cmd.exe`)**:
-   > O script `godseye.bat` ativa automaticamente a página de código UTF-8 (`chcp 65001`) e o suporte ANSI do Windows para exibir o símbolo do **Olho de Hórus (`𓂀`)** perfeitamente no CMD:
-   ```cmd
-   godseye.bat
-   godseye.bat scan example.com
-   godseye.bat scan 00.000.000/0001-91 --output dossie-empresa.md --format md
-   godseye.bat sources --region brasil
-   godseye.bat shell
-   ```
-5. **Executando no Windows PowerShell (`powershell.exe` / `pwsh`)**:
-   ```powershell
-   .\godseye.ps1
-   .\godseye.ps1 scan analista@empresa.com.br --depth 2
-   .\godseye.ps1 benchmark
-   .\godseye.ps1 serve --port 8000
-   ```
+### 2.1 Windows (CMD e PowerShell) — Pronto em 1 Comando
 
----
+```cmd
+git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
+cd gods-eye
 
-### 2.2 Instalação em Distribuições Linux (Ubuntu, Debian, Fedora, Arch)
+REM Opcao 1: Executar direto (configura tudo sozinho no primeiro uso e abre o Menu Interativo!)
+godseye.bat
 
-1. **Instale o Python 3, `venv` e `git`**:
-   ```bash
-   # Ubuntu / Debian / Mint / Pop!_OS
-   sudo apt update && sudo apt install -y git python3 python3-venv python3-pip
-
-   # Fedora / RHEL
-   sudo dnf install -y git python3 python3-pip
-
-   # Arch Linux / Manjaro
-   sudo pacman -S --noconfirm git python python-pip
-   ```
-2. **Clone o projeto e configure o ambiente virtual**:
-   ```bash
-   git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
-   cd gods-eye
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -e .
-   chmod +x ./godseye.sh
-   ```
-3. **Execute**:
-   ```bash
-   ./godseye.sh
-   ./godseye.sh scan example.com
-   # Ou diretamente pelo binário instalado no ambiente virtual:
-   godseye scan 01001-000
-   ```
-
----
-
-### 2.3 🐉 Instalação Especial no Kali Linux (Estação de Pentest & OSINT)
-
-No **Kali Linux**, o ambiente Python do sistema utiliza a proteção **PEP 668** (`externally-managed-environment`). Para instalar o **God's Eye (`𓂀`)** de forma limpa, com suporte à fonte de hieróglifos egípcios (`𓂀`) no terminal `zsh`/`bash` do Kali e disponível globalmente em qualquer diretório:
-
-#### Opção A: Instalação Global em `/opt/godseye` (Recomendado para Kali Linux)
-```bash
-# 1. Atualize os pacotes e instale python3-venv + fontes Noto (garante a renderização do glifo 𓂀)
-sudo apt update && sudo apt install -y git python3 python3-venv python3-pip fonts-noto-core
-
-# 2. Clone o repositório em /opt/godseye
-sudo git clone https://github.com/ViniciusCostaGrillo/gods-eye.git /opt/godseye
-sudo chown -R $USER:$USER /opt/godseye
-cd /opt/godseye
-
-# 3. Crie a virtualenv isolada e instale o pacote em modo editável
-python3 -m venv .venv
-./.venv/bin/pip install --upgrade pip
-./.venv/bin/pip install -e .
-chmod +x /opt/godseye/godseye.sh
-
-# 4. Crie o atalho global em /usr/local/bin/godseye
-sudo ln -sf /opt/godseye/godseye.sh /usr/local/bin/godseye
-
-# 5. Pronto! Execute de qualquer diretório no Kali Linux:
-godseye
-godseye scan example.com
-godseye scan 00.000.000/0001-91 --output dossie.md --format md
-godseye shell
+REM Opcao 2: Instalar no PATH do Windows para usar o comando 'godseye' de qualquer pasta:
+install.bat
+godseye doctor
+godseye scan 00.000.000/0001-91
 ```
 
-#### Opção B: Instalação via `pipx` no Kali Linux
+No **Windows PowerShell**:
+```powershell
+.\godseye.ps1
+# Ou instalar no PATH do usuário com 1 clique:
+.\install.ps1
+godseye menu
+```
+
+---
+
+### 2.2 Linux (Ubuntu, Debian, Fedora, Arch) — Pronto em 1 Comando
+
 ```bash
-sudo apt update && sudo apt install -y pipx fonts-noto-core
-pipx ensurepath
-pipx install git+https://github.com/ViniciusCostaGrillo/gods-eye.git
+git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
+cd gods-eye
+chmod +x install.sh godseye.sh
+./install.sh
+
+# Pronto! Digite 'godseye' de qualquer diretório:
+godseye
 godseye scan example.com
+```
+
+---
+
+### 2.3 🐉 Kali Linux (Estação de Pentest & OSINT) — Pronto em 1 Comando
+
+No **Kali Linux**, o script `./install.sh` resolve automaticamente a restrição **PEP 668** (`externally-managed-environment`), instala o pacote de fontes de hieróglifos (`fonts-noto-core` para exibir o glifo `𓂀`), cria o ambiente `.venv` isolado e registra o comando global `/usr/local/bin/godseye`:
+
+```bash
+git clone https://github.com/ViniciusCostaGrillo/gods-eye.git
+cd gods-eye
+chmod +x install.sh godseye.sh
+./install.sh
+
+# Pronto para uso de qualquer pasta no Kali Linux:
+godseye
+godseye menu
+godseye doctor
+godseye scan +5511999998888
 ```
 
 ---

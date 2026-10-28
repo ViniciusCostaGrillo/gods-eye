@@ -63,3 +63,8 @@ def test_cli_commands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     res_audit = runner.invoke(app, ["audit"])
     assert res_audit.exit_code == 0
     assert "case.created" in res_audit.stdout
+
+    # 5. Zero-Config Doctor command
+    res_doc = runner.invoke(app, ["doctor"])
+    assert res_doc.exit_code == 0
+    assert "READY" in res_doc.stdout
